@@ -1,0 +1,13 @@
+{
+  "items": [
+    {
+      "id": "crown",
+      "slot": "head",
+      "resource": "procedural:crown",
+      "offset_x": 0.0,
+      "offset_y": 0.08,
+      "scale": 0.9,
+      "sorting_order": 20
+    }
+  ]
+}

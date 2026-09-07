@@ -75,6 +75,14 @@ pyinstaller --noconsole --onefile --clean --name="TokenPet" emojinoko_monitor.py
 
 編譯完成後，二進制執行檔將生成於 `dist/TokenPet.exe`，可直接雙擊在任何 Windows 電腦上運行。
 
+### Unity 模組化 Renderer PoC（選用）
+
+專案另含一個完全 opt-in 的 Unity 6 renderer PoC，方向是保留簡潔可愛的角色
+語言，並把動作、互動與道具掛載模組化。舊 Tkinter／Canvas 地瓜球保持預設，
+Unity 缺檔、連線失敗或崩潰時會自動 fallback。建置與執行方式請見
+[`UNITY_POC.md`](UNITY_POC.md)；新電腦的完整環境還原、依賴與驗證流程請見
+[`DEVELOPMENT.md`](DEVELOPMENT.md)。
+
 ---
 
 ## 🛠️ 專案結構

@@ -58,3 +58,15 @@ venv.bak/
 *.swp
 *.swo
 *~
+
+# Unity generated state and local build artifacts
+unity_poc/[Ll]ibrary/
+unity_poc/[Tt]emp/
+unity_poc/[Oo]bj/
+unity_poc/[Bb]uild/
+unity_poc/[Bb]uilds/
+unity_poc/[Ll]ogs/
+unity_poc/[Uu]ser[Ss]ettings/
+unity_poc/[Mm]emoryCaptures/
+unity_poc/[Rr]ecordings/
+unity_poc/.vs/

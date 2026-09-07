@@ -1,0 +1,12 @@
+# Unity serializes empty YAML scalars as `key: ` and regenerates that spacing.
+unity_poc/**/*.meta whitespace=-trailing-space
+unity_poc/**/*.asset whitespace=-trailing-space
+unity_poc/**/*.unity whitespace=-trailing-space
+
+# Keep Unity text serialization stable across Windows development machines.
+unity_poc/**/*.cs text eol=lf
+unity_poc/**/*.meta text eol=lf
+unity_poc/**/*.asset text eol=lf
+unity_poc/**/*.unity text eol=lf
+unity_poc/**/*.json text eol=lf
+unity_poc/**/*.txt text eol=lf

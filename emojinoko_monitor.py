@@ -30,6 +30,7 @@ from emojinoko_game import (
     PET_SATIETY_DECAY, PET_SATIETY_THRESHOLD,
     TOKEN_TO_XP_RATIO, TOKEN_TO_SATIETY, TOKEN_TO_COIN
 )
+from unity_renderer_bridge import UnityRendererBridge, unity_renderer_requested
 
 def time_ms():
     return time.time() * 1000.0
@@ -144,6 +145,12 @@ class EmojinokoMonitor:
         default_y = screen_h - 340
         
         self.config = load_config()
+        # Unity is opt-in. The legacy Canvas pet is created first and remains
+        # available for immediate fallback if the external player fails.
+        self.unity_renderer = None
+        self._unity_renderer_active = False
+        self._unity_renderer_visible = True
+        self._unity_renderer_started_at = 0.0
         
         # 針對 LDAP 聯網版本 (非單機 Standalone 模式)，若無更新路徑則預設寫入公司內網分享路徑
         if not self.STANDALONE:
@@ -211,6 +218,9 @@ class EmojinokoMonitor:
 
         # 5. 建立 GUI 介面與繪圖引擎
         self._build_ui()
+
+        # A failed or missing PoC renderer is intentionally non-fatal.
+        self._start_unity_renderer_if_requested()
 
         # 6. 啟動背景迴圈線程 (繪圖動畫、產幣時鐘、用量更新、自動更新)
         self._start_game_loops()
@@ -345,6 +355,125 @@ class EmojinokoMonitor:
         self.root.geometry(f"+{int(x)}+{int(y)}")
         # 同步更新獨立的物理貼地影子與獨立 HUD 看板位置
         self.update_shadow_position(x, y)
+
+    def _start_unity_renderer_if_requested(self):
+        if not unity_renderer_requested(self.config):
+            return
+
+        bridge = UnityRendererBridge(
+            self.config.get("unity_renderer_path"),
+            (self._physics_win_x, self._physics_win_y),
+        )
+        self.unity_renderer = bridge
+        self._unity_renderer_started_at = time.monotonic()
+        if not bridge.start():
+            print(f"[Unity Renderer] Fallback to legacy: {bridge.executable}")
+            self.unity_renderer = None
+            return
+
+        print(f"[Unity Renderer] Starting PoC: {bridge.executable}")
+        self.root.after(50, self._poll_unity_renderer)
+
+    def _poll_unity_renderer(self):
+        bridge = getattr(self, "unity_renderer", None)
+        if bridge is None or not self.root.winfo_exists():
+            return
+
+        for payload in bridge.poll_events():
+            event_name = payload.get("event_name", "")
+            if event_name == "ready":
+                self._activate_unity_renderer()
+            elif event_name == "poke":
+                self.pet.eye_state = "dizzy"
+                self.pet.mouth_state = "open"
+                self.pet.vel_scale_y = -0.20
+                self.pet.vel_scale_x = 0.14
+                self.root.after(650, self.pet.restore_eye)
+            elif event_name == "double_click":
+                self.open_ai_chat()
+            elif event_name == "context_menu":
+                try:
+                    self.context_menu.tk_popup(
+                        int(payload.get("x", self.root.winfo_pointerx())),
+                        int(payload.get("y", self.root.winfo_pointery())),
+                    )
+                finally:
+                    try:
+                        self.context_menu.grab_release()
+                    except Exception:
+                        pass
+            elif event_name == "drag_released":
+                x = int(payload.get("x", self._physics_win_x))
+                y = int(payload.get("y", self._physics_win_y))
+                self._physics_win_x = x
+                self._physics_win_y = y
+                self.root.geometry(f"+{x}+{y}")
+                save_config({"pet_x": x, "pet_y": y})
+            elif event_name == "action_finished" and payload.get("action") == "land":
+                if self.pet.state in ("fall", "roll", "backflip"):
+                    self.pet.state = "idle"
+            elif event_name in ("process_exit", "connection_lost", "renderer_closed"):
+                self._fallback_to_legacy_renderer(event_name, payload.get("message", ""))
+                return
+
+        if not self._unity_renderer_active:
+            timed_out = time.monotonic() - self._unity_renderer_started_at > 8.0
+            if timed_out or not bridge.running:
+                self._fallback_to_legacy_renderer("startup_timeout")
+                return
+
+        self.root.after(50, self._poll_unity_renderer)
+
+    def _activate_unity_renderer(self):
+        if self._unity_renderer_active:
+            return
+        self._unity_renderer_active = True
+        self._unity_renderer_visible = True
+        try:
+            self.root.withdraw()
+            if getattr(self, "shadow_win", None):
+                self.shadow_win.withdraw()
+        except Exception:
+            pass
+        self._sync_unity_renderer(force=True)
+        print("[Unity Renderer] Ready; legacy pet hidden and standing by as fallback.")
+
+    def _fallback_to_legacy_renderer(self, reason, detail=""):
+        bridge = getattr(self, "unity_renderer", None)
+        self.unity_renderer = None
+        self._unity_renderer_active = False
+        self._unity_renderer_visible = True
+        if bridge is not None:
+            bridge.stop()
+        try:
+            self.root.deiconify()
+            self.root.lift()
+            if getattr(self, "shadow_win", None):
+                self.shadow_win.deiconify()
+        except Exception:
+            pass
+        suffix = f": {detail}" if detail else ""
+        print(f"[Unity Renderer] Fallback to legacy ({reason}){suffix}")
+
+    def _sync_unity_renderer(self, force=False):
+        bridge = getattr(self, "unity_renderer", None)
+        if not self._unity_renderer_active or bridge is None or not bridge.connected:
+            return
+        if force:
+            bridge.send(
+                {
+                    "command": "equip",
+                    "slot": "head",
+                    "item": "crown" if self.pet.equipped_accessory == "crown" else "",
+                }
+            )
+        bridge.send_snapshot(
+            state=self.pet.state,
+            emotion=self.pet.eye_state,
+            accessory=self.pet.equipped_accessory,
+            look_x=self.pet.look_offset_x,
+            look_y=self.pet.look_offset_y,
+        )
 
     # ──────────────────────────────────────────────────
     # 物理與產幣計時迴圈 (Game Loops)
@@ -1311,6 +1440,10 @@ class EmojinokoMonitor:
 
         # 將漂浮文字與食物 Token 抬升至最頂層，避免被剛重繪的地瓜球或看板遮擋
         self.canvas.tag_raise("overlay")
+
+        # Send a compact renderer contract while the unchanged legacy pet keeps
+        # running as the state source and hot fallback.
+        self._sync_unity_renderer()
 
         self.root.after(16, self.tick_physics)
 
@@ -2768,6 +2901,28 @@ class EmojinokoMonitor:
         self.root.after(0, self._toggle_visibility)
 
     def _toggle_visibility(self):
+        if getattr(self, "_unity_renderer_active", False):
+            self._unity_renderer_visible = not self._unity_renderer_visible
+            bridge = getattr(self, "unity_renderer", None)
+            if bridge is not None:
+                bridge.send(
+                    {
+                        "command": "set_visible",
+                        "visible": self._unity_renderer_visible,
+                    }
+                )
+            method = "deiconify" if self._unity_renderer_visible else "withdraw"
+            auxiliary_windows = [getattr(self, "hud_win", None)]
+            for collection_name in ("spawned_memo_wins", "spawned_furniture_wins"):
+                auxiliary_windows.extend(getattr(self, collection_name, {}).values())
+            for win in auxiliary_windows:
+                if win is not None:
+                    try:
+                        getattr(win, method)()
+                    except Exception:
+                        pass
+            return
+
         if self.root.state() == "withdrawn":
             self.root.deiconify()
             self.root.lift()
@@ -3113,6 +3268,9 @@ class EmojinokoMonitor:
 
     def _on_destroy(self, event):
         if event.widget == self.root:
+            if getattr(self, "unity_renderer", None):
+                self.unity_renderer.stop()
+                self.unity_renderer = None
             if getattr(self, "shadow_win", None):
                 try:
                     self.shadow_win.destroy()

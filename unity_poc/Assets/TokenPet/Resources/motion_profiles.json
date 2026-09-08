@@ -1,0 +1,70 @@
+{
+  "profiles": [
+    {
+      "id": "idle",
+      "duration": 4.8,
+      "frequency": 2.15,
+      "bob": 0.035,
+      "sway": 0.018,
+      "tilt": 1.3,
+      "squash": 0.024,
+      "stretch": 0.020,
+      "smoothing": 0.10
+    },
+    {
+      "id": "walk",
+      "duration": 3.8,
+      "frequency": 8.6,
+      "bob": 0.10,
+      "sway": 0.065,
+      "tilt": 5.4,
+      "squash": 0.050,
+      "stretch": 0.045,
+      "smoothing": 0.055
+    },
+    {
+      "id": "poke",
+      "duration": 0.72,
+      "frequency": 13.0,
+      "bob": 0.24,
+      "sway": 0.055,
+      "tilt": 15.0,
+      "squash": 0.16,
+      "stretch": 0.13,
+      "smoothing": 0.035
+    },
+    {
+      "id": "drag",
+      "duration": 1.0,
+      "frequency": 7.0,
+      "bob": 0.025,
+      "sway": 0.02,
+      "tilt": 16.0,
+      "squash": 0.08,
+      "stretch": 0.13,
+      "smoothing": 0.045
+    },
+    {
+      "id": "airborne",
+      "duration": 1.0,
+      "frequency": 10.0,
+      "bob": 0.72,
+      "sway": 0.20,
+      "tilt": 280.0,
+      "squash": 0.08,
+      "stretch": 0.14,
+      "smoothing": 0.025
+    },
+    {
+      "id": "land",
+      "duration": 0.68,
+      "frequency": 3.0,
+      "bob": 0.06,
+      "sway": 0.0,
+      "tilt": 4.0,
+      "squash": 0.34,
+      "stretch": 0.28,
+      "smoothing": 0.035
+    }
+  ]
+}

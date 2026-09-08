@@ -122,7 +122,7 @@ namespace TokenPet
                 Send(new RendererEvent
                 {
                     event_name = "hello",
-                    version = "unity-poc-0.1",
+                    version = "unity-poc-0.4.2",
                     state = "ready"
                 });
 

@@ -9,6 +9,13 @@ source of truth for account data, economy, save data, furniture, and AI.
 - an original, minimal kawaii transparent character sprite
 - Windows borderless, topmost chroma-key overlay
 - idle, walk, poke, drag, fall, and land reactions
+- data-driven motion profiles with anticipation, velocity stretch, gaze lean,
+  idle micro-gestures, and damped landing rebounds
+- a layered character rig: the accepted painted body is preserved as art while
+  four Unity-driven noodle limbs change pose for idle, walk, poke, drag,
+  airborne, and landing states
+- a procedural face rig with cursor gaze, randomized blinks, animated brows,
+  and state-specific eye/mouth poses instead of a baked static expression
 - a data-driven equipment controller and `head` socket with a crown test item
 - newline-delimited JSON communication over localhost TCP
 - Python-side startup failure and crash fallback to the legacy renderer
@@ -67,3 +74,17 @@ its `resource` field at a prefab under `Resources`. The equipment controller
 parents it to the requested socket, applies its offset/scale/sorting order, and
 keeps this logic out of the character animation code. The procedural crown is
 only a zero-dependency PoC item.
+
+## Tuning motion
+
+Edit `Assets/TokenPet/Resources/motion_profiles.json` for timing, bob, sway,
+tilt, squash/stretch, and smoothing. `MotionRoot` applies one coherent pose to
+the body and every equipment socket. The C# profile library contains matching
+fallback values so a malformed or missing optional entry does not crash the
+renderer.
+
+`TokenPetLimbRig` owns the procedural arm/leg poses. The rig loads
+`tokenpet_body.png` first and automatically falls back to the untouched
+`tokenpet_stylized.png` full-body sprite if the layered art is unavailable.
+`TokenPetExpressionRig` is enabled when `tokenpet_body_faceless.png` is
+available; otherwise the painted-face body remains the visual fallback.

@@ -17,10 +17,13 @@
 ## 目前完成的垂直切片
 
 - 以「えもじの子（仮）」的簡潔表情語言為方向、但造型與配色原創的透明地瓜球資產
-- `idle` 呼吸與果凍 secondary motion
-- `walk` 彈跳與重心搖擺
-- 點擊 `poke` 反應
-- 拖曳 Unity 視窗、放手後 `fall / land`
+- `idle` 呼吸、果凍 secondary motion、隨機探頭、慢速重心轉移與平滑注視
+- `walk` 接地壓縮、離地伸展、彈跳與重心搖擺
+- 點擊 `poke` 的預備、反衝與衰減餘震
+- 拖曳依游標速度拉伸；放手後 `fall / land` 有速度形變與多段回彈
+- `MotionRoot` 統一驅動身體與配件，動作參數由 `motion_profiles.json` 提供
+- 身體與四肢已分層；短手短腳由 Unity 程序化骨架即時換 pose，原始完整貼圖仍保留為 fallback
+- 五官已從身體分層；Unity 即時控制追視、隨機眨眼、眉毛與各動作的眼睛／嘴型
 - 動態 viewport safety clamp；旋轉、彈跳與配件不得超出 Player 邊界
 - 道具控制器、JSON catalog 與 `Socket_Head`；皇冠是第一個可替換測試物件
 - 無邊框、置頂、正式模式不顯示於工作列
@@ -99,6 +102,16 @@ catalog 填入 prefab resource path；不需要改角色的動畫或 IPC 程式�
 目前先有 `head`，後續可用相同方式加上 `face`、`left_hand`、`right_hand`、
 `back` 等 socket。表情與手腳 pose 也應沿用同樣原則拆成獨立 layer／controller，
 避免再做成一個大型繪圖函式。
+
+## 擴充動作
+
+一般的節奏與幅度調整先修改
+`Assets/TokenPet/Resources/motion_profiles.json`，不需要重新編譯狀態機。每個 profile
+包含 `duration`、`frequency`、`bob`、`sway`、`tilt`、`squash`、`stretch` 與
+`smoothing`。程式內仍保留相同的安全預設值，避免 JSON 缺漏讓 renderer 無法啟動。
+
+角色的桌面座標只能由 `TokenPetWindowsOverlay` 移動；動畫只能操作 `MotionRoot`。
+所有 Renderer（包含程序化四肢與裝備）在 pose 解算後會再經過 viewport safety clamp。
 
 ## IPC 摘要
 

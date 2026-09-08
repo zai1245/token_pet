@@ -20,8 +20,12 @@ namespace TokenPet
         private static readonly Vector3 RigRestPosition = new(0f, -0.12f, 0f);
         private Camera petCamera;
         private Transform rigRoot;
+        private Transform motionRoot;
         private Transform body;
         private Transform headSocket;
+        private TokenPetLimbRig limbRig;
+        private TokenPetExpressionRig expressionRig;
+        private TokenPetMotionProfiles motionProfiles;
         private TokenPetEquipmentController equipment;
         private CircleCollider2D hitCollider;
         private TokenPetIpcClient ipc;
@@ -39,6 +43,18 @@ namespace TokenPet
         private Vector2 pointerVelocity;
         private float lastClickTime = -10f;
         private bool externallyDriven;
+        private float baseBodyScale;
+        private Vector3 posePosition;
+        private Vector3 posePositionVelocity;
+        private Vector3 poseScale = Vector3.one;
+        private Vector3 poseScaleVelocity;
+        private float poseRotation;
+        private float poseRotationVelocity;
+        private Vector2 lookTarget;
+        private Vector2 lookSmoothed;
+        private Vector2 lookVelocity;
+        private float nextIdleGestureAt = 1.5f;
+        private float idleGestureDirection = 1f;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void CreateRuntime()
@@ -88,13 +104,21 @@ namespace TokenPet
         private bool SetupCharacter()
         {
             rigRoot = new GameObject("TokenPetRig").transform;
+            motionRoot = new GameObject("MotionRoot").transform;
+            motionRoot.SetParent(rigRoot, false);
             body = new GameObject("Body").transform;
-            body.SetParent(rigRoot, false);
+            body.SetParent(motionRoot, false);
 
-            Texture2D texture = Resources.Load<Texture2D>("tokenpet_stylized");
+            Texture2D texture = Resources.Load<Texture2D>("tokenpet_body_faceless");
+            bool usingFacelessBody = texture != null;
+            if (texture == null)
+                texture = Resources.Load<Texture2D>("tokenpet_body");
+            bool usingRigBody = texture != null;
+            if (texture == null)
+                texture = Resources.Load<Texture2D>("tokenpet_stylized");
             if (texture == null)
             {
-                Debug.LogError("Missing Resources/tokenpet_stylized.png");
+                Debug.LogError("Missing both Resources/tokenpet_body.png and tokenpet_stylized.png");
                 Destroy(rigRoot.gameObject);
                 rigRoot = null;
                 return false;
@@ -106,20 +130,36 @@ namespace TokenPet
             SpriteRenderer renderer = body.gameObject.AddComponent<SpriteRenderer>();
             renderer.sprite = sprite;
             renderer.sortingOrder = 10;
-            float scale = CharacterWidth / sprite.bounds.size.x;
-            body.localScale = Vector3.one * scale;
+            baseBodyScale = CharacterWidth / sprite.bounds.size.x;
+            body.localScale = Vector3.one * baseBodyScale;
+
+            if (usingRigBody)
+            {
+                limbRig = motionRoot.gameObject.AddComponent<TokenPetLimbRig>();
+                limbRig.Initialize();
+                if (usingFacelessBody)
+                {
+                    expressionRig = motionRoot.gameObject.AddComponent<TokenPetExpressionRig>();
+                    expressionRig.Initialize();
+                }
+            }
+            else
+            {
+                Debug.LogWarning("Rig body unavailable; using original full-body sprite fallback.");
+            }
 
             hitCollider = rigRoot.gameObject.AddComponent<CircleCollider2D>();
             hitCollider.radius = 1.32f;
             hitCollider.offset = new Vector2(0f, -0.02f);
 
             headSocket = new GameObject("Socket_Head").transform;
-            headSocket.SetParent(rigRoot, false);
+            headSocket.SetParent(motionRoot, false);
             headSocket.localPosition = new Vector3(0f, 1.35f, 0f);
 
             equipment = rigRoot.gameObject.AddComponent<TokenPetEquipmentController>();
             equipment.RegisterSocket("head", headSocket);
             equipment.LoadCatalog();
+            motionProfiles = TokenPetMotionProfiles.Load();
 
             rigRoot.position = RigRestPosition;
             return true;
@@ -134,7 +174,7 @@ namespace TokenPet
             {
                 event_name = "ready",
                 state = "idle",
-                version = "unity-poc-0.1"
+                version = "unity-poc-0.4.2"
             });
         }
 
@@ -243,6 +283,9 @@ namespace TokenPet
         {
             motionTime += deltaTime;
             autonomousTimer += deltaTime;
+            TokenPetMotionProfile profile = motionProfiles.Get(motion.ToString());
+            UpdateLook(deltaTime);
+
             Vector3 scale = Vector3.one;
             float rotation = 0f;
             float horizontal = 0f;
@@ -251,10 +294,17 @@ namespace TokenPet
             switch (motion)
             {
                 case MotionState.Idle:
-                    vertical = Mathf.Sin(motionTime * 2.2f) * 0.035f;
-                    scale.x = 1f + Mathf.Sin(motionTime * 2.2f) * 0.018f;
-                    scale.y = 1f - Mathf.Sin(motionTime * 2.2f) * 0.022f;
-                    if (!externallyDriven && autonomousTimer > 4.5f)
+                    float breath = Mathf.Sin(motionTime * profile.frequency);
+                    float slowSway = Mathf.Sin(motionTime * profile.frequency * 0.47f + 0.8f);
+                    float gesture = BellPulse((motionTime - nextIdleGestureAt) / 0.9f);
+                    vertical = breath * profile.bob + gesture * 0.055f;
+                    horizontal = slowSway * profile.sway + gesture * idleGestureDirection * 0.045f;
+                    rotation = slowSway * profile.tilt - gesture * idleGestureDirection * 3.8f;
+                    scale.x = 1f + breath * profile.stretch + gesture * 0.025f;
+                    scale.y = 1f - breath * profile.squash + gesture * 0.045f;
+                    if (motionTime > nextIdleGestureAt + 0.9f)
+                        ScheduleIdleGesture(motionTime);
+                    if (!externallyDriven && autonomousTimer > profile.duration)
                     {
                         autonomousTimer = 0f;
                         EnterState(MotionState.Walk);
@@ -262,11 +312,15 @@ namespace TokenPet
                     break;
 
                 case MotionState.Walk:
-                    vertical = Mathf.Abs(Mathf.Sin(motionTime * 8f)) * 0.08f;
-                    horizontal = Mathf.Sin(motionTime * 4f) * 0.055f;
-                    rotation = Mathf.Sin(motionTime * 8f) * 4.2f;
-                    scale.y = 1f + Mathf.Abs(Mathf.Sin(motionTime * 8f)) * 0.035f;
-                    if (!externallyDriven && autonomousTimer > 4f)
+                    float step = Mathf.Sin(motionTime * profile.frequency);
+                    float lift = Mathf.Abs(step);
+                    float contact = 1f - lift;
+                    vertical = lift * profile.bob - contact * 0.018f;
+                    horizontal = Mathf.Sin(motionTime * profile.frequency * 0.5f) * profile.sway;
+                    rotation = step * profile.tilt;
+                    scale.x = 1f + contact * profile.squash - lift * profile.squash * 0.25f;
+                    scale.y = 1f - contact * profile.squash + lift * profile.stretch;
+                    if (!externallyDriven && autonomousTimer > profile.duration)
                     {
                         autonomousTimer = 0f;
                         EnterState(MotionState.Idle);
@@ -274,11 +328,15 @@ namespace TokenPet
                     break;
 
                 case MotionState.Poke:
-                    float poke = Mathf.Clamp01(motionTime / 0.58f);
-                    vertical = Mathf.Sin(poke * Mathf.PI) * 0.22f;
-                    rotation = Mathf.Sin(poke * Mathf.PI * 4f) * (1f - poke) * 13f;
-                    scale.x = 1f + Mathf.Sin(poke * Mathf.PI * 3f) * 0.10f;
-                    scale.y = 1f - Mathf.Sin(poke * Mathf.PI * 3f) * 0.10f;
+                    float poke = Mathf.Clamp01(motionTime / profile.duration);
+                    float anticipation = 1f - Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(poke / 0.16f));
+                    float recoil = Mathf.Sin(Mathf.Clamp01((poke - 0.10f) / 0.90f) * Mathf.PI);
+                    float pokeWobble = Mathf.Sin(poke * Mathf.PI * 5f) * (1f - poke);
+                    vertical = recoil * profile.bob - anticipation * 0.07f;
+                    horizontal = pokeWobble * profile.sway;
+                    rotation = pokeWobble * profile.tilt;
+                    scale.x = 1f + anticipation * profile.squash + pokeWobble * profile.stretch;
+                    scale.y = 1f - anticipation * profile.squash + recoil * profile.stretch - pokeWobble * profile.squash;
                     if (poke >= 1f)
                     {
                         ipc.Send(new RendererEvent { event_name = "action_finished", action = "poke" });
@@ -287,17 +345,23 @@ namespace TokenPet
                     break;
 
                 case MotionState.Drag:
-                    rotation = Mathf.Clamp(-pointerVelocity.x * 0.012f, -14f, 14f);
-                    scale.x = 0.94f;
-                    scale.y = 1.08f;
+                    float dragSpeed = Mathf.Clamp01(pointerVelocity.magnitude / 1800f);
+                    vertical = Mathf.Sin(motionTime * profile.frequency) * profile.bob;
+                    horizontal = Mathf.Clamp(pointerVelocity.x / 5000f, -profile.sway, profile.sway);
+                    rotation = Mathf.Clamp(-pointerVelocity.x * 0.012f, -profile.tilt, profile.tilt);
+                    scale.x = 1f - profile.squash - dragSpeed * 0.035f;
+                    scale.y = 1f + profile.stretch + dragSpeed * 0.055f;
                     break;
 
                 case MotionState.Airborne:
                     airborneVelocity.y -= 5.5f * deltaTime;
                     airborneHeight += airborneVelocity.y * deltaTime;
-                    vertical = Mathf.Clamp(airborneHeight, 0f, 0.72f);
-                    horizontal = Mathf.Clamp(airborneVelocity.x * 0.08f, -0.20f, 0.20f);
-                    rotation = Mathf.Repeat(motionTime * 280f, 360f);
+                    vertical = Mathf.Clamp(airborneHeight, 0f, profile.bob);
+                    horizontal = Mathf.Clamp(airborneVelocity.x * 0.08f, -profile.sway, profile.sway);
+                    rotation = Mathf.Repeat(motionTime * profile.tilt, 360f);
+                    float flightStretch = Mathf.Clamp01(Mathf.Abs(airborneVelocity.y) / 3.2f);
+                    scale.x = 1f - flightStretch * profile.squash;
+                    scale.y = 1f + flightStretch * profile.stretch;
                     if (airborneHeight <= 0f && airborneVelocity.y < 0f)
                     {
                         airborneHeight = 0f;
@@ -306,10 +370,12 @@ namespace TokenPet
                     break;
 
                 case MotionState.Land:
-                    float land = Mathf.Clamp01(motionTime / 0.42f);
-                    float impact = Mathf.Sin(land * Mathf.PI) * (1f - land);
-                    scale.x = 1f + impact * 0.35f;
-                    scale.y = 1f - impact * 0.30f;
+                    float land = Mathf.Clamp01(motionTime / profile.duration);
+                    float impact = Mathf.Sin(land * Mathf.PI * profile.frequency) * Mathf.Exp(-3.2f * land);
+                    vertical = -Mathf.Abs(impact) * profile.bob;
+                    rotation = Mathf.Sin(land * Mathf.PI * 2f) * profile.tilt * (1f - land);
+                    scale.x = 1f + impact * profile.squash;
+                    scale.y = 1f - impact * profile.stretch;
                     if (land >= 1f)
                     {
                         ipc.Send(new RendererEvent { event_name = "action_finished", action = "land" });
@@ -318,24 +384,73 @@ namespace TokenPet
                     break;
             }
 
-            // The native desktop window owns global movement. Keep the rig fixed and
-            // limit visual secondary motion to a safe inset so no animation can hit
-            // the 512x512 Unity viewport and clip the character.
-            rigRoot.position = RigRestPosition;
-            body.localPosition = new Vector3(horizontal, vertical, 0f);
-            body.localRotation = Quaternion.Euler(0f, 0f, rotation);
+            float lookWeight = motion == MotionState.Drag || motion == MotionState.Airborne ? 0.25f : 1f;
+            horizontal += lookSmoothed.x * 0.045f * lookWeight;
+            vertical += lookSmoothed.y * 0.018f * lookWeight;
+            rotation -= lookSmoothed.x * 2.4f * lookWeight;
 
-            SpriteRenderer spriteRenderer = body.GetComponent<SpriteRenderer>();
-            float baseScale = CharacterWidth / spriteRenderer.sprite.bounds.size.x;
-            body.localScale = new Vector3(baseScale * scale.x, baseScale * scale.y, baseScale);
-            headSocket.localPosition = new Vector3(horizontal, 1.35f + vertical * 0.5f, 0f);
-            headSocket.localRotation = Quaternion.Euler(0f, 0f, rotation * 0.65f);
+            Vector3 targetPosition = new(horizontal, vertical, 0f);
+            Vector3 targetScale = new(
+                Mathf.Max(0.65f, scale.x),
+                Mathf.Max(0.65f, scale.y),
+                1f);
+            float smoothTime = Mathf.Max(0.01f, profile.smoothing);
+            posePosition = Vector3.SmoothDamp(
+                posePosition, targetPosition, ref posePositionVelocity,
+                smoothTime, Mathf.Infinity, deltaTime);
+            poseScale = Vector3.SmoothDamp(
+                poseScale, targetScale, ref poseScaleVelocity,
+                smoothTime, Mathf.Infinity, deltaTime);
+            poseRotation = Mathf.SmoothDampAngle(
+                poseRotation, rotation, ref poseRotationVelocity,
+                smoothTime, Mathf.Infinity, deltaTime);
+
+            // The native desktop window owns global movement. MotionRoot owns the
+            // local performance so body and all equipment share one coherent pose.
+            rigRoot.position = RigRestPosition;
+            motionRoot.localPosition = posePosition;
+            motionRoot.localRotation = Quaternion.Euler(0f, 0f, poseRotation);
+            motionRoot.localScale = poseScale;
+            if (limbRig != null)
+                limbRig.ApplyPose(motion.ToString(), motionTime, pointerVelocity, lookSmoothed);
+            if (expressionRig != null)
+                expressionRig.ApplyExpression(motion.ToString(), motionTime, lookSmoothed);
             ClampVisualInsideViewport();
+        }
+
+        private void UpdateLook(float deltaTime)
+        {
+            if (ipc == null || !ipc.IsConnected)
+            {
+                Vector3 cursorWorld = petCamera.ScreenToWorldPoint(Input.mousePosition);
+                Vector2 direction = cursorWorld - body.position;
+                lookTarget = new Vector2(
+                    Mathf.Clamp(direction.x / 1.7f, -1f, 1f),
+                    Mathf.Clamp(direction.y / 1.7f, -1f, 1f));
+            }
+
+            lookSmoothed = Vector2.SmoothDamp(
+                lookSmoothed, lookTarget, ref lookVelocity,
+                0.14f, Mathf.Infinity, deltaTime);
+        }
+
+        private static float BellPulse(float normalizedTime)
+        {
+            if (normalizedTime <= 0f || normalizedTime >= 1f)
+                return 0f;
+            float sine = Mathf.Sin(normalizedTime * Mathf.PI);
+            return sine * sine;
+        }
+
+        private void ScheduleIdleGesture(float fromTime = 0f)
+        {
+            nextIdleGestureAt = fromTime + UnityEngine.Random.Range(1.4f, 3.2f);
+            idleGestureDirection = UnityEngine.Random.value < 0.5f ? -1f : 1f;
         }
 
         private void ClampVisualInsideViewport()
         {
-            SpriteRenderer[] renderers = rigRoot.GetComponentsInChildren<SpriteRenderer>();
+            Renderer[] renderers = rigRoot.GetComponentsInChildren<Renderer>();
             if (renderers.Length == 0)
                 return;
 
@@ -365,8 +480,8 @@ namespace TokenPet
 
             if (correction.sqrMagnitude > 0f)
             {
-                body.position += correction;
-                headSocket.position += correction;
+                motionRoot.position += correction;
+                posePosition = motionRoot.localPosition;
             }
         }
 
@@ -376,6 +491,8 @@ namespace TokenPet
             motionTime = 0f;
             if (next == MotionState.Airborne)
                 airborneHeight = 0f;
+            if (next == MotionState.Idle)
+                ScheduleIdleGesture();
             if (next == MotionState.Idle || next == MotionState.Walk)
                 externallyDriven = false;
         }
@@ -386,6 +503,9 @@ namespace TokenPet
             {
                 case "snapshot":
                     ApplyLegacyState(command.state);
+                    lookTarget = new Vector2(
+                        Mathf.Clamp(command.look_x / 12f, -1f, 1f),
+                        Mathf.Clamp(-command.look_y / 6f, -1f, 1f));
                     equipment.Equip("head", command.item);
                     break;
                 case "trigger":

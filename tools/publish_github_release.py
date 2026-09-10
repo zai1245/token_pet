@@ -23,6 +23,10 @@ def capture(*command: str) -> str:
     return subprocess.check_output(command, cwd=ROOT, text=True).strip()
 
 
+def git_capture(*arguments: str) -> str:
+    return capture("git", "-c", f"safe.directory={ROOT.as_posix()}", *arguments)
+
+
 def version() -> str:
     match = re.search(r'RendererVersion\s*=\s*"([^"]+)"', BOOTSTRAP.read_text(encoding="utf-8"))
     if not match:
@@ -31,7 +35,7 @@ def version() -> str:
 
 
 def repository() -> str:
-    remote = capture("git", "remote", "get-url", "origin")
+    remote = git_capture("remote", "get-url", "origin")
     match = re.search(r"github\.com[/:]([^/]+/[^/.]+)(?:\.git)?$", remote)
     if not match:
         raise RuntimeError(f"Unsupported GitHub origin URL: {remote}")
@@ -56,11 +60,11 @@ def find_unity() -> Path:
 
 
 def ensure_publishable_git_state() -> str:
-    if capture("git", "status", "--porcelain"):
+    if git_capture("status", "--porcelain"):
         raise RuntimeError("Commit all source changes before publishing a release.")
-    head = capture("git", "rev-parse", "HEAD")
-    branch = capture("git", "branch", "--show-current")
-    remote_head = capture("git", "rev-parse", f"origin/{branch}")
+    head = git_capture("rev-parse", "HEAD")
+    branch = git_capture("branch", "--show-current")
+    remote_head = git_capture("rev-parse", f"origin/{branch}")
     if head != remote_head:
         raise RuntimeError(f"Push {branch} before publishing a release.")
     return head

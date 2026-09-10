@@ -10,6 +10,13 @@
 
 **TokenPet（地瓜球）** 是一隻運行在 Windows 桌面上的軟萌 Q 彈 2.5D 電子寵物與 API Token 即時用量監控助理！它不僅能即時監控 API 費用與用量，還擁有完整的果凍物理彈性引擎、動態 360° 轉身渲染、AI 智慧尬聊、日式和風便利貼、家具互動以及豐富的休閒小遊戲！
 
+## 📥 下載 Unity 整合測試版
+
+前往 [GitHub Releases](https://github.com/zai1245/token_pet/releases)，在最新版本的
+**Assets** 下載 `TokenPetIntegrated-...zip`，解壓後執行 `run_unity_preview.cmd`。
+請勿單獨啟動 `TokenPetUnity.exe`；完整右鍵選單與遊戲系統需要 Python bridge。
+維護者發佈流程見 [`GITHUB_RELEASES.md`](GITHUB_RELEASES.md)。
+
 ---
 
 ## ✨ 核心特色與功能亮點

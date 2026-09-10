@@ -1,5 +1,6 @@
 import tkinter as tk
 import math
+import os
 import random
 import time
 
@@ -135,6 +136,8 @@ class EmojinokoPet(BasePet):
         self.ice_timer = 0
         self.singing_timer = 0
         self.rabbit_pop_timer = 0
+        self.eat_type = ""
+        self.matcha_timer = 0
 
     def rotate_point(self, dx, dy, angle):
         """
@@ -227,6 +230,17 @@ class EmojinokoPet(BasePet):
                     "vy": random.uniform(-1.2, -0.4),
                     "color": color,
                     "life": random.randint(15, 30)
+                })
+
+        if getattr(self, "matcha_timer", 0) > 0:
+            self.matcha_timer -= 1
+            if random.random() < 0.10:
+                self.coffee_sparks.append({
+                    "dx": random.uniform(-self.r * 0.8, self.r * 0.8),
+                    "dy": random.uniform(-self.r * 0.7, self.r * 0.5),
+                    "vy": random.uniform(-1.2, -0.5),
+                    "color": random.choice(["#a6e3a1", "#94e2d5", "#f9e2af"]),
+                    "life": random.randint(18, 34)
                 })
 
         # 珍珠奶茶 Buff 計時與青色泡泡粒子特效
@@ -349,53 +363,6 @@ class EmojinokoPet(BasePet):
                         self.eye_state = "normal"
                         self.mouth_state = "normal"
                         
-        if getattr(self, "spicy_timer", 0) > 0:
-            self.spicy_timer -= 1
-            if random.random() < 0.25:
-                color = random.choice(["#ff5555", "#ffaa00", "#ffdd00"])
-                angle = random.uniform(0, 2 * math.pi)
-                dist = random.uniform(self.r * 0.3, self.r * 1.1)
-                self.coffee_sparks.append({
-                    "dx": dist * math.cos(angle),
-                    "dy": dist * math.sin(angle),
-                    "vy": random.uniform(-2.2, -0.8),
-                    "color": color,
-                    "life": random.randint(10, 25)
-                })
-            
-            if self.spicy_timer % 20 == 0:
-                monitor = getattr(self, "monitor", None)
-                if monitor:
-                    txt = random.choice(["🔥", "HOT!", "好辣!!", "🔥"])
-                    monitor.create_text_popup(txt, 190 + random.randint(-15, 15), 180 + random.randint(-10, 10), color="#f38ba8")
-                # 確保在效果期間眼神和嘴巴一直維持辣哭狀態
-                self.eye_state = "blink"
-                self.mouth_state = "open"
-                
-            if self.spicy_timer <= 0:
-                self.eye_state = "normal"
-                self.mouth_state = "normal"
-
-        # 吃拉麵狀態定時處理
-        if self.state == "eat":
-            if getattr(self, "ramen_timer", 0) > 0:
-                self.ramen_timer -= 1
-                if self.ramen_timer % 15 == 0:
-                    self.vel_scale_y = -0.15
-                    self.vel_scale_x = 0.1
-                    monitor = getattr(self, "monitor", None)
-                    if monitor:
-                        monitor.create_text_popup("*吸溜吸溜*", 205, 185, color="#fab387")
-                if self.ramen_timer <= 0:
-                    if getattr(self, "spicy_timer", 0) > 0:
-                        self.state = "walk"
-                        self.eye_state = "blink"
-                        self.mouth_state = "open"
-                    else:
-                        self.state = "idle"
-                        self.eye_state = "normal"
-                        self.mouth_state = "normal"
-
         # 喝飲料狀態定時處理
         if self.state == "drink":
             self.drink_timer -= 1
@@ -2443,27 +2410,48 @@ class EmojinokoPet(BasePet):
                                     self.cx + rx_rl + 4 * acc_rot_scale, self.cy + ry_rl + 3,
                                     fill="#a6e3a1", outline="#3c2203", width=1.2, tags="character")
 
+class _ShopNoopWidget:
+    def config(self, **_kwargs):
+        pass
+
+
 class ShopWindow:
-    def __init__(self, parent, monitor=None):
-        self.win = tk.Toplevel(parent)
-        self.win.title("地瓜球配件與道具商店")
-        self.win.geometry("380x480")
-        self.win.configure(bg="#1e1e2e")
-        self.win.resizable(True, True)
-        self.win.minsize(320, 300)
-        self.win.attributes("-topmost", True)
-        
+    def __init__(self, parent, monitor=None, build_ui=True):
         self.monitor = monitor
-        
-        # Make it modal/transient
-        self.win.transient(parent)
+        self.build_ui = build_ui
+        self.win = None
+        if build_ui:
+            self.win = tk.Toplevel(parent)
+            self.win.title("地瓜球配件與道具商店")
+            self.win.geometry("380x480")
+            self.win.configure(bg="#1e1e2e")
+            self.win.resizable(True, True)
+            self.win.minsize(320, 300)
+            self.win.attributes("-topmost", True)
+
+            # A transient follows its owner into the withdrawn state. In Unity
+            # renderer mode the legacy Canvas root is intentionally withdrawn,
+            # so keep auxiliary tools as independent top-level windows there.
+            try:
+                if parent.state() != "withdrawn":
+                    self.win.transient(parent)
+            except Exception:
+                pass
         
         self.items = [
             {
                 "id": "char_mask",
-                "name": "☄️ 赤色彗星・夏亞白軍盔面具",
+                "name": "☄️ 赤色彗星・夏亞面罩",
                 "price": 300,
-                "desc": "三倍速的傳奇！經典全白軍官鋼盔、黃金衝天鷹角與全白夏亞面具，移動速度提升 3 倍！"
+                "desc": "初代灰藍機械面罩。可與夏亞頭盔分開裝備，移動速度提升 3 倍！",
+                "slot": "face"
+            },
+            {
+                "id": "char_helmet",
+                "name": "🪖 赤色彗星・夏亞頭盔",
+                "price": 260,
+                "desc": "初代白色側翼軍盔與金色指揮官角；和面罩組合就是完整造型。",
+                "slot": "head"
             },
             {
                 "id": "sunglasses",
@@ -2553,9 +2541,7 @@ class ShopWindow:
                 "id": "bandage",
                 "name": "🩹 療癒OK繃",
                 "price": 15,
-                "desc": "迅速止痛！Token 飽食度回復增加 30%",
-                "type": "food",
-                "restore": 0.0
+                "desc": "迅速止痛！Token 飽食度回復增加 30%"
             },
             {
                 "id": "matcha_parfait",
@@ -2647,6 +2633,7 @@ class ShopWindow:
             },
             {
                 "id": "futon",
+                "desc": "讓地瓜球躺平補眠，睡醒會精神滿滿。",
                 "name": "🛌 日式溫馨地舖",
                 "price": 80,
                 "desc": "召喚日式被鋪。拖地瓜球到被子內，它就會鑽進被窩熟睡，飽食度消耗減半、浮現Zzz！",
@@ -2654,6 +2641,7 @@ class ShopWindow:
             },
             {
                 "id": "laptop",
+                "desc": "地瓜球會坐下打扣，螢幕與游標持續動起來。",
                 "name": "💻 加班寫扣筆電",
                 "price": 120,
                 "desc": "召喚小筆電。拖地瓜球到鍵盤前，它會開啟認真寫扣加班動畫，且工作產幣效率額外+25%！",
@@ -2661,6 +2649,7 @@ class ShopWindow:
             },
             {
                 "id": "trampoline",
+                "desc": "接住下落的地瓜球，觸發彈跳與擴散波紋。",
                 "name": "🤸 霓虹彈簧蹦蹦床",
                 "price": 90,
                 "desc": "召喚彈簧床。當放開地瓜球、掉落其上時會將其高高彈飛，極具動感且重置完美落地判定！",
@@ -2668,6 +2657,7 @@ class ShopWindow:
             },
             {
                 "id": "night_lamp",
+                "desc": "暖色呼吸光，地瓜球會在旁邊靜靜冥想。",
                 "name": "🏮 療癒蘑菇小夜燈",
                 "price": 100,
                 "desc": "召喚溫馨小夜燈。在昏暗時散發暖黃微光，地瓜球靠近會靜心發呆放鬆！",
@@ -2675,6 +2665,7 @@ class ShopWindow:
             },
             {
                 "id": "succulent_pot",
+                "desc": "陪地瓜球澆水照顧植物，偶爾獲得經驗值。",
                 "name": "🪴 療癒多肉小盆栽",
                 "price": 70,
                 "desc": "召喚綠意多肉盆栽。地瓜球靠近時會開心地給小植物澆水，冒出愛心！",
@@ -2688,12 +2679,77 @@ class ShopWindow:
                 monitor.pet_data["accessories"] = []
             if "equipped_accessory" not in monitor.pet_data:
                 monitor.pet_data["equipped_accessory"] = None
+            if not isinstance(monitor.pet_data.get("equipped_accessories"), dict):
+                monitor.pet_data["equipped_accessories"] = {}
+                legacy_equipped = monitor.pet_data.get("equipped_accessory")
+                if legacy_equipped:
+                    monitor.pet_data["equipped_accessories"][
+                        self._get_accessory_slot(legacy_equipped)
+                    ] = legacy_equipped
             if "furniture" not in monitor.pet_data:
                 monitor.pet_data["furniture"] = []
             if "spawned_furniture" not in monitor.pet_data:
                 monitor.pet_data["spawned_furniture"] = []
+
+            self.developer_mode = os.environ.get("TOKENPET_DEVELOPER_MODE") == "1"
+            if self.developer_mode:
+                accessory_ids = [
+                    item["id"] for item in self.items
+                    if item.get("type", "accessory") not in ("food", "furniture")
+                ]
+                furniture_ids = [
+                    item["id"] for item in self.items
+                    if item.get("type") == "furniture"
+                ]
+                monitor.pet_data["accessories"] = list(dict.fromkeys(
+                    monitor.pet_data["accessories"] + accessory_ids
+                ))
+                monitor.pet_data["furniture"] = list(dict.fromkeys(
+                    monitor.pet_data["furniture"] + furniture_ids
+                ))
+                monitor.pet_data["coins"] = max(
+                    int(monitor.pet_data.get("coins", 0)), 999999
+                )
+                monitor.save_pet_savegame()
+        else:
+            self.developer_mode = False
                 
-        self._build_ui()
+        if build_ui:
+            self._build_ui()
+        else:
+            self.coins_label = _ShopNoopWidget()
+            self.buttons = {
+                item["id"]: _ShopNoopWidget() for item in self.items
+            }
+
+    def _get_accessory_slot(self, item_id):
+        for item in self.items:
+            if item["id"] == item_id:
+                if item.get("slot"):
+                    return item["slot"]
+                break
+        if item_id in {
+            "scholar_cap", "cat_ears", "crown", "halo", "gentleman_hat",
+            "demon_horns", "wizard_hat", "clover_sprout", "char_helmet",
+        }:
+            return "head"
+        if item_id == "bowtie":
+            return "neck"
+        if item_id == "rainbow":
+            return "body"
+        return "face"
+
+    def _sync_legacy_equipped_accessory(self, preferred=None):
+        equipment = self.monitor.pet_data.setdefault("equipped_accessories", {})
+        values = [item_id for item_id in equipment.values() if item_id]
+        if "char_mask" in values:
+            primary = "char_mask"
+        elif preferred in values:
+            primary = preferred
+        else:
+            primary = values[0] if values else None
+        self.monitor.pet_data["equipped_accessory"] = primary
+        self.monitor.pet.equipped_accessory = primary
 
     def _build_ui(self):
         # Title
@@ -2790,7 +2846,7 @@ class ShopWindow:
                                 font=("微軟正黑體", 10, "bold"), anchor="w")
             lbl_name.pack(fill=tk.X, anchor="w")
             
-            lbl_desc = tk.Label(info_frame, text=item["desc"], bg="#252535", fg="#a6adc8",
+            lbl_desc = tk.Label(info_frame, text=item.get("desc", ""), bg="#252535", fg="#a6adc8",
                                 font=("微軟正黑體", 8), anchor="w", justify=tk.LEFT, wraplength=210)
             lbl_desc.pack(fill=tk.X, anchor="w")
             
@@ -2849,7 +2905,7 @@ class ShopWindow:
             return
             
         owned = self.monitor.pet_data.get("accessories", [])
-        equipped = self.monitor.pet_data.get("equipped_accessory")
+        equipped_slots = self.monitor.pet_data.get("equipped_accessories", {})
         
         owned_furniture = self.monitor.pet_data.get("furniture", [])
         spawned_furniture = self.monitor.pet_data.get("spawned_furniture", [])
@@ -2870,7 +2926,8 @@ class ShopWindow:
                 else:
                     btn.config(text=f"購買 {item['price']} 🪙", bg="#a6e3a1", fg="#1e1e2e", activebackground="#a6e3a1")
             else:
-                if item_id == equipped:
+                slot = self._get_accessory_slot(item_id)
+                if equipped_slots.get(slot) == item_id:
                     btn.config(text="使用中(卸下)", bg="#f38ba8", fg="#1e1e2e", activebackground="#f5e0dc")
                 elif item_id in owned:
                     btn.config(text="裝備", bg="#89b4fa", fg="#1e1e2e", activebackground="#b4befe")
@@ -2884,14 +2941,16 @@ class ShopWindow:
         item_id = item["id"]
         price = item["price"]
         owned = self.monitor.pet_data.setdefault("accessories", [])
-        equipped = self.monitor.pet_data.get("equipped_accessory")
+        equipped_slots = self.monitor.pet_data.setdefault("equipped_accessories", {})
         coins = self.monitor.pet_data.get("coins", 0)
         item_type = item.get("type", "accessory")
         
         if item_type == "food":
             # Consumable food item
             if coins < price:
-                messagebox.showerror("地瓜幣不足", f"您需要 {price} 🪙 才能購買此食物！\n當前餘額: {coins} 🪙")
+                self._show_shop_error(
+                    f"地瓜幣不足：需要 {price}，目前有 {coins} 🪙"
+                )
                 return
                 
             self.monitor.pet_data["coins"] = coins - price
@@ -2902,14 +2961,24 @@ class ShopWindow:
             
             self.monitor.create_text_popup(f"-{price} 🪙", 170, 120, color="#f38ba8")
             self.monitor.create_text_popup(f"食用 {item['name']} 😋", 170, 140, color="#fab387")
+
+            # Unity uses this stable item id to select the matching prop.  The
+            # legacy Canvas also benefits because every consumable now gets a
+            # short, consistent eating reaction instead of silently applying
+            # only the numeric effect.
+            self.monitor.pet.eat_type = item_id
             
             # Apply food-specific effects
             if item_id == "candy":
                 self.monitor.pet.candy_timer = 1800  # 30s
+                self.monitor.pet.ramen_timer = 90
+                self.monitor.pet.state = "eat"
                 self.monitor.pet.eye_state = "happy"
                 self.monitor.pet.mouth_state = "open"
             elif item_id == "bubble_tea":
                 self.monitor.pet.bubble_tea_timer = 2700  # 45s
+                self.monitor.pet.ramen_timer = 90
+                self.monitor.pet.state = "eat"
                 self.monitor.pet.eye_state = "happy"
                 self.monitor.pet.mouth_state = "open"
             elif item_id == "ramen":
@@ -2957,6 +3026,13 @@ class ShopWindow:
                 self.monitor.pet.state = "balloon"
                 self.monitor.pet.eye_state = "happy"
                 self.monitor.pet.mouth_state = "open"
+            elif item_id in ("bandage", "matcha_parfait", "souffle_pancake"):
+                self.monitor.pet.ramen_timer = 90
+                self.monitor.pet.state = "eat"
+                self.monitor.pet.eye_state = "happy"
+                self.monitor.pet.mouth_state = "open"
+                if item_id == "matcha_parfait":
+                    self.monitor.pet.matcha_timer = 1800
                 
             self.coins_label.config(text=self._get_coins_text())
             return
@@ -2982,7 +3058,9 @@ class ShopWindow:
                 self._update_button_states()
             else:
                 if coins < price:
-                    messagebox.showerror("地瓜幣不足", f"您需要 {price} 🪙 才能購買此家具！\n當前餘額: {coins} 🪙")
+                    self._show_shop_error(
+                        f"地瓜幣不足：需要 {price}，目前有 {coins} 🪙"
+                    )
                     return
                 self.monitor.pet_data["coins"] = coins - price
                 owned_furniture.append(item_id)
@@ -2994,30 +3072,39 @@ class ShopWindow:
                 self._update_button_states()
             return
 
-        if item_id == equipped:
-            self.monitor.pet_data["equipped_accessory"] = None
-            self.monitor.pet.equipped_accessory = None
+        slot = self._get_accessory_slot(item_id)
+        if equipped_slots.get(slot) == item_id:
+            equipped_slots.pop(slot, None)
+            self._sync_legacy_equipped_accessory()
             self.monitor.create_text_popup("已卸下裝飾", 170, 120, color="#cba6f7")
         elif item_id in owned:
-            self.monitor.pet_data["equipped_accessory"] = item_id
-            self.monitor.pet.equipped_accessory = item_id
+            equipped_slots[slot] = item_id
+            self._sync_legacy_equipped_accessory(item_id)
             self.monitor.create_text_popup(f"裝備 {item['name']}", 170, 120, color="#a6e3a1")
         else:
             if coins < price:
-                messagebox.showerror("地瓜幣不足", f"您需要 {price} 🪙 才能購買此配件！\n當前餘額: {coins} 🪙")
+                self._show_shop_error(
+                    f"地瓜幣不足：需要 {price}，目前有 {coins} 🪙"
+                )
                 return
                 
             self.monitor.pet_data["coins"] = coins - price
             owned.append(item_id)
             self.monitor.pet_data["accessories"] = owned
-            self.monitor.pet_data["equipped_accessory"] = item_id
-            self.monitor.pet.equipped_accessory = item_id
+            equipped_slots[slot] = item_id
+            self._sync_legacy_equipped_accessory(item_id)
             
             self.monitor.create_text_popup(f"-{price} 🪙", 170, 120, color="#f38ba8")
             self.monitor.create_text_popup(f"獲得 {item['name']}！", 170, 140, color="#fab387")
             
         self.monitor.save_pet_savegame()
         self.coins_label.config(text=self._get_coins_text())
+
+    def _show_shop_error(self, message):
+        if self.build_ui:
+            messagebox.showerror("地瓜幣不足", message)
+        elif self.monitor:
+            self.monitor.create_text_popup(message, 170, 120, color="#f38ba8")
 def time_ms():
     return time.time() * 1000.0
 

@@ -19,6 +19,10 @@ import time
 from typing import Any
 
 
+UNITY_WINDOW_WIDTH = 340
+UNITY_WINDOW_HEIGHT = 300
+
+
 class UnityRendererBridge:
     """Launch and communicate with the opt-in Unity renderer."""
 
@@ -106,11 +110,13 @@ class UnityRendererBridge:
             "-screen-fullscreen",
             "0",
             "-screen-width",
-            "512",
+            str(UNITY_WINDOW_WIDTH),
             "-screen-height",
-            "512",
+            str(UNITY_WINDOW_HEIGHT),
             f"--tokenpet-port={port}",
         ]
+        if os.environ.get("TOKENPET_DEBUG_WINDOW") == "1":
+            command.append("--tokenpet-debug-window")
         if self.start_position is not None:
             command.extend(
                 [
@@ -163,14 +169,43 @@ class UnityRendererBridge:
         accessory: str | None,
         look_x: float,
         look_y: float,
+        equipment: dict[str, str] | None = None,
+        mouth: str = "normal",
+        level: int = 1,
+        xp: float = 0.0,
+        xp_max: float = 100.0,
+        satiety: float = 100.0,
+        coins: int = 0,
+        eat_type: str = "",
+        furniture: str = "",
+        effects: str = "",
+        show_board: bool = False,
+        board_text: str = "",
+        overtime: bool = False,
     ) -> bool:
         payload = {
             "command": "snapshot",
             "state": state,
             "emotion": emotion,
+            "mouth": mouth,
             "item": accessory or "",
+            "head_item": (equipment or {}).get("head", ""),
+            "face_item": (equipment or {}).get("face", ""),
+            "neck_item": (equipment or {}).get("neck", ""),
+            "body_item": (equipment or {}).get("body", ""),
             "look_x": round(float(look_x), 3),
             "look_y": round(float(look_y), 3),
+            "level": max(1, int(level)),
+            "xp": round(max(0.0, float(xp)), 2),
+            "xp_max": round(max(1.0, float(xp_max)), 2),
+            "satiety": round(max(0.0, min(100.0, float(satiety))), 2),
+            "coins": max(0, int(coins)),
+            "eat_type": eat_type or "",
+            "furniture": furniture or "",
+            "effects": effects or "",
+            "show_board": bool(show_board),
+            "board_text": board_text or "",
+            "overtime": bool(overtime),
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         now = time.monotonic()
@@ -179,6 +214,71 @@ class UnityRendererBridge:
         self._last_snapshot = encoded
         self._last_snapshot_at = now
         return self.send(payload)
+
+    def move_window(self, x: float, y: float) -> bool:
+        """Move the native Unity overlay to a Python-owned desktop position."""
+        return self.send(
+            {
+                "command": "move_window",
+                "x": int(round(x)),
+                "y": int(round(y)),
+            }
+        )
+
+    def show_popup(
+        self,
+        text: str,
+        x: float,
+        y: float,
+        color: str = "#f9e2af",
+        duration: float = 0.8,
+    ) -> bool:
+        """Render legacy feedback text on the visible Unity surface."""
+        return self.send(
+            {
+                "command": "popup",
+                "text": str(text),
+                "x": round(float(x), 2),
+                "y": round(float(y), 2),
+                "color": color,
+                "duration": max(0.25, float(duration)),
+            }
+        )
+
+    def show_shop(self, payload: dict[str, Any]) -> bool:
+        """Open or refresh the shop inside the Unity renderer surface."""
+        return self.send(
+            {
+                "command": "show_shop",
+                "payload": json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            }
+        )
+
+    def sync_furniture(self, items: list[dict[str, Any]]) -> bool:
+        """Mirror Python-owned furniture state into the Unity desktop stage."""
+        return self.send(
+            {
+                "command": "sync_furniture",
+                "payload": json.dumps(
+                    {"items": items},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            }
+        )
+
+    def trigger_furniture(self, item: str, action: str) -> bool:
+        return self.send(
+            {
+                "command": "trigger_furniture",
+                "item": str(item),
+                "action": str(action),
+            }
+        )
 
     def poll_events(self) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []

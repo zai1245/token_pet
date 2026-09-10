@@ -10,6 +10,7 @@ namespace TokenPet
     public sealed class TokenPetLimbRig : MonoBehaviour
     {
         private static readonly Color LimbColor = new Color32(82, 35, 17, 255);
+        private const float LegRootY = -0.73f;
 
         private LineRenderer leftArm;
         private LineRenderer rightArm;
@@ -40,7 +41,9 @@ namespace TokenPet
             ApplyPose("idle", 0f, Vector2.zero, Vector2.zero);
         }
 
-        public void ApplyPose(string state, float time, Vector2 pointerVelocity, Vector2 look)
+        public void ApplyPose(
+            string state, float time, Vector2 pointerVelocity, Vector2 look,
+            string legacyState = "idle", string effects = "")
         {
             if (!enabled || leftArm == null)
                 return;
@@ -118,10 +121,67 @@ namespace TokenPet
                     break;
             }
 
+            switch ((legacyState ?? "idle").ToLowerInvariant())
+            {
+                case "sleep":
+                case "sleep_futon":
+                case "relax_sofa":
+                case "warm_kotatsu":
+                    armLeft = 200f;
+                    armRight = -20f;
+                    legLeft = -165f;
+                    legRight = -15f;
+                    break;
+                case "eat":
+                case "drink":
+                case "memo_eat":
+                    float nibble = Mathf.Sin(time * 10f) * 7f;
+                    armLeft = 42f + nibble;
+                    armRight = 138f - nibble;
+                    armLeftBend = -18f;
+                    armRightBend = 18f;
+                    break;
+                case "work_laptop":
+                    float typing = Mathf.Sin(time * 15f) * 9f;
+                    armLeft = 15f + typing;
+                    armRight = 165f - typing;
+                    break;
+                case "water_plant":
+                    armLeft = 18f;
+                    armRight = 38f;
+                    armLeftBend = -24f;
+                    armRightBend = 20f;
+                    break;
+                case "balloon":
+                    armRight = 62f;
+                    armRightBend = -8f;
+                    legLeft = -115f + Mathf.Sin(time * 4f) * 8f;
+                    legRight = -65f - Mathf.Sin(time * 4f) * 8f;
+                    break;
+                case "memo_read":
+                    armLeft = 28f;
+                    armRight = 152f;
+                    break;
+            }
+
+            if ((effects ?? "").IndexOf("wave", System.StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                armRight = 72f + Mathf.Sin(time * 14f) * 32f;
+                armRightBend = 18f;
+            }
+            if ((effects ?? "").IndexOf("singing", System.StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                armLeft = 145f + Mathf.Sin(time * 6f) * 18f;
+                armRight = 35f - Mathf.Sin(time * 6f) * 18f;
+            }
+
             SetLimb(leftArm, new Vector2(-0.86f, -0.05f), armLeft, armLeftBend, 0.15f, 0.12f);
             SetLimb(rightArm, new Vector2(0.86f, -0.05f), armRight, armRightBend, 0.15f, 0.12f);
-            SetLimb(leftLeg, new Vector2(-0.38f, -0.90f), legLeft, legLeftBend, 0.12f, 0.11f);
-            SetLimb(rightLeg, new Vector2(0.38f, -0.90f), legRight, legRightBend, 0.12f, 0.11f);
+            // Start well inside the painted body silhouette. Because the limbs
+            // render behind the body, only the portion below the outline is
+            // visible and the feet can never look detached after scaling.
+            SetLimb(leftLeg, new Vector2(-0.36f, LegRootY), legLeft, legLeftBend, 0.12f, 0.11f);
+            SetLimb(rightLeg, new Vector2(0.36f, LegRootY), legRight, legRightBend, 0.12f, 0.11f);
         }
 
         private LineRenderer CreateLimb(string limbName, float width)

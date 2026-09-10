@@ -111,3 +111,15 @@ Unity 功能變更至少應提交：
 - 原生 Windows 視窗負責桌面座標；Unity rig 必須留在 viewport 安全區，不能用
   `rigRoot.position` 模擬桌面移動。
 - Unity renderer 必須維持 opt-in，且任何啟動／連線失敗都要保留 Canvas fallback。
+
+## 8. GitHub Release
+
+完整發佈與下載流程請見 `GITHUB_RELEASES.md`。完成預覽驗收、調整
+`RendererVersion`、commit 並 push 後，可執行：
+
+```powershell
+python tools/publish_github_release.py
+```
+
+GitHub Release 只上傳 `TokenPetIntegrated-...zip`，避免使用者誤下載缺少右鍵選單與
+Python 遊戲系統的 renderer-only 套件。

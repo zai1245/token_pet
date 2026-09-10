@@ -10,7 +10,9 @@ import sys
 import ctypes
 import math
 import random
+import re
 import subprocess
+from types import SimpleNamespace
 from datetime import datetime
 
 # 匯入原本 usage_widget.py 的設定與功能，達成程式碼高度共享，且保留 usage_widget 原始碼不被改動
@@ -34,6 +36,19 @@ from unity_renderer_bridge import UnityRendererBridge, unity_renderer_requested
 
 def time_ms():
     return time.time() * 1000.0
+
+
+def _accessory_slot(item_id):
+    if item_id in {
+        "scholar_cap", "cat_ears", "crown", "halo", "gentleman_hat",
+        "demon_horns", "wizard_hat", "clover_sprout", "char_helmet",
+    }:
+        return "head"
+    if item_id == "bowtie":
+        return "neck"
+    if item_id == "rainbow":
+        return "body"
+    return "face"
 
 # 當前地瓜球 App 版本
 CURRENT_VERSION = "2.9.4"
@@ -151,6 +166,9 @@ class EmojinokoMonitor:
         self._unity_renderer_active = False
         self._unity_renderer_visible = True
         self._unity_renderer_started_at = 0.0
+        self._unity_status_visible = bool(self.config.get("unity_status_visible", True))
+        self._unity_action_menu = None
+        self._unity_desktop_metrics = None
         
         # 針對 LDAP 聯網版本 (非單機 Standalone 模式)，若無更新路徑則預設寫入公司內網分享路徑
         if not self.STANDALONE:
@@ -264,6 +282,31 @@ class EmojinokoMonitor:
         self.shadow_win = ShadowWindow(self)
         self.hud_win = HudWindow(self)
         self.pet.equipped_accessory = self.pet_data.get("equipped_accessory")
+        equipment = self.pet_data.get("equipped_accessories")
+        if not isinstance(equipment, dict):
+            equipment = {}
+            legacy = self.pet.equipped_accessory
+            if legacy:
+                if legacy in {
+                    "scholar_cap", "cat_ears", "crown", "halo",
+                    "gentleman_hat", "demon_horns", "wizard_hat",
+                    "clover_sprout", "char_helmet",
+                }:
+                    slot = "head"
+                elif legacy == "bowtie":
+                    slot = "neck"
+                elif legacy == "rainbow":
+                    slot = "body"
+                else:
+                    slot = "face"
+                equipment[slot] = legacy
+            self.pet_data["equipped_accessories"] = equipment
+        if not isinstance(self.pet_data.get("equipped_accessories"), dict):
+            self.pet_data["equipped_accessories"] = {}
+            if self.pet.equipped_accessory:
+                self.pet_data["equipped_accessories"][
+                    _accessory_slot(self.pet.equipped_accessory)
+                ] = self.pet.equipped_accessory
         
         # 初始化便利貼視窗集合，並加載已儲存的便利貼
         self.spawned_memo_wins = {}
@@ -355,6 +398,9 @@ class EmojinokoMonitor:
         self.root.geometry(f"+{int(x)}+{int(y)}")
         # 同步更新獨立的物理貼地影子與獨立 HUD 看板位置
         self.update_shadow_position(x, y)
+        bridge = getattr(self, "unity_renderer", None)
+        if getattr(self, "_unity_renderer_active", False) and bridge is not None:
+            bridge.move_window(x, y)
 
     def _start_unity_renderer_if_requested(self):
         if not unity_renderer_requested(self.config):
@@ -381,34 +427,56 @@ class EmojinokoMonitor:
 
         for payload in bridge.poll_events():
             event_name = payload.get("event_name", "")
+            if event_name in ("ready", "desktop_metrics", "drag_released"):
+                self._apply_unity_desktop_metrics(payload)
             if event_name == "ready":
                 self._activate_unity_renderer()
+            elif event_name == "desktop_metrics":
+                pass
             elif event_name == "poke":
-                self.pet.eye_state = "dizzy"
-                self.pet.mouth_state = "open"
-                self.pet.vel_scale_y = -0.20
-                self.pet.vel_scale_x = 0.14
-                self.root.after(650, self.pet.restore_eye)
+                self._handle_unity_poke()
             elif event_name == "double_click":
                 self.open_ai_chat()
             elif event_name == "context_menu":
-                try:
-                    self.context_menu.tk_popup(
-                        int(payload.get("x", self.root.winfo_pointerx())),
-                        int(payload.get("y", self.root.winfo_pointery())),
+                self._show_context_menu(
+                    SimpleNamespace(
+                        x_root=int(payload.get("x", self.root.winfo_pointerx())),
+                        y_root=int(payload.get("y", self.root.winfo_pointery())),
                     )
-                finally:
-                    try:
-                        self.context_menu.grab_release()
-                    except Exception:
-                        pass
+                )
+            elif event_name == "drag_started":
+                self._detach_unity_drag()
+            elif event_name == "shake":
+                self.pet.state = "roll"
+                self.pet.roll_speed = max(-0.3, min(0.3,
+                    float(payload.get("velocity_x", 0.0)) * 0.0004))
+                self.pet.eye_state = "dizzy"
+                self.pet.mouth_state = "open"
+                self.create_text_popup("😵 暈眩中...", 170, 130, color=ACCENT_COLOR)
+            elif event_name == "shop_action":
+                self._handle_unity_shop_action(payload.get("item", ""))
+            elif event_name == "furniture_moved":
+                item_id = payload.get("item", "")
+                furniture = self.spawned_furniture_wins.get(item_id)
+                if isinstance(furniture, UnityFurnitureProxy):
+                    furniture.set_position(
+                        int(payload.get("x", furniture.winfo_x())),
+                        int(payload.get("y", furniture.winfo_y())),
+                    )
+                    positions = self.pet_data.setdefault("furniture_positions", {})
+                    positions[item_id] = {
+                        "x": furniture.winfo_x(),
+                        "y": furniture.winfo_y(),
+                    }
+                    self.save_pet_savegame()
+            elif event_name == "furniture_despawn":
+                self.despawn_furniture(payload.get("item", ""))
             elif event_name == "drag_released":
                 x = int(payload.get("x", self._physics_win_x))
                 y = int(payload.get("y", self._physics_win_y))
-                self._physics_win_x = x
-                self._physics_win_y = y
-                self.root.geometry(f"+{x}+{y}")
+                self.update_geometry(x, y)
                 save_config({"pet_x": x, "pet_y": y})
+                self._begin_unity_release_fall(payload)
             elif event_name == "action_finished" and payload.get("action") == "land":
                 if self.pet.state in ("fall", "roll", "backflip"):
                     self.pet.state = "idle"
@@ -417,12 +485,124 @@ class EmojinokoMonitor:
                 return
 
         if not self._unity_renderer_active:
-            timed_out = time.monotonic() - self._unity_renderer_started_at > 8.0
+            timed_out = time.monotonic() - self._unity_renderer_started_at > 15.0
             if timed_out or not bridge.running:
                 self._fallback_to_legacy_renderer("startup_timeout")
                 return
 
         self.root.after(50, self._poll_unity_renderer)
+
+    def _apply_unity_desktop_metrics(self, payload):
+        """Store DPI-aware work-area geometry reported by the Unity process."""
+        width = int(payload.get("width", 0) or 0)
+        height = int(payload.get("height", 0) or 0)
+        floor_y = int(payload.get("floor_y", 0) or 0)
+        existing = self._unity_desktop_metrics or {}
+
+        # drag_released repeats floor_y as a last-moment guard but does not
+        # repeat the full rectangle. Preserve the latest complete work area.
+        if width > 0 and height > 0:
+            existing.update({
+                "work_x": int(payload.get("x", 0) or 0),
+                "work_y": int(payload.get("y", 0) or 0),
+                "work_w": width,
+                "work_h": height,
+            })
+        if floor_y:
+            existing["floor_y"] = floor_y
+
+        stage_width = int(payload.get("stage_width", 0) or 0)
+        stage_height = int(payload.get("stage_height", 0) or 0)
+        if stage_width > 0 and stage_height > 0:
+            existing.update({
+                "mon_x": int(payload.get("stage_x", 0) or 0),
+                "mon_y": int(payload.get("stage_y", 0) or 0),
+                "mon_w": stage_width,
+                "mon_h": stage_height,
+            })
+
+        if existing:
+            self._unity_desktop_metrics = existing
+
+    def _detach_unity_drag(self):
+        """Match the Canvas rule that grabbing the pet cancels furniture poses."""
+        if getattr(self, "current_furniture_snapped", None) is None:
+            return
+        self.current_furniture_snapped = None
+        self.target_furniture_id = None
+        self._furniture_cooldown = 120
+        self.pet.state = "idle"
+        self.pet.eye_state = "normal"
+        self.pet.mouth_state = "normal"
+
+    def _handle_unity_poke(self):
+        """Apply the original Canvas click reaction and five-click fever combo."""
+        self.pet.vel_scale_y = -0.22
+        self.pet.vel_scale_x = 0.15
+        self.pet.eye_state = "happy"
+        self.pet.mouth_state = "normal"
+        self.root.after(800, self.pet.restore_eye)
+
+        if self.pet_data.get("equipped_accessory") == "char_mask" and random.random() < 0.40:
+            quote = random.choice([
+                "三倍速的帥氣！☄️",
+                "因為他是個少爺啊... ☕",
+                "讓我見識一下吧！✨",
+                "這就是認可的意義！🔥",
+            ])
+            self.create_text_popup(quote, 170, 110, color="#f38ba8")
+
+        now = time.time()
+        if now - getattr(self, "_last_click_time", 0.0) < 0.6:
+            self._click_count = getattr(self, "_click_count", 0) + 1
+        else:
+            self._click_count = 1
+        self._last_click_time = now
+        if self._click_count >= 5 and self.pet.state not in ("sleep", "drink", "roll"):
+            self._click_count = 0
+            self._trigger_fever_mode()
+
+    def _begin_unity_release_fall(self, payload):
+        """Feed a Unity drag release into the original desktop fall engine."""
+        vx = float(payload.get("velocity_x", 0.0))
+        # Unity reports screen-up as positive; Tk/desktop Y grows downwards.
+        vy = -float(payload.get("velocity_y", 0.0))
+        speed = math.hypot(vx, vy)
+        current_y = float(self._physics_win_y)
+        self._fall_peak_y = current_y
+        m_info = self.get_current_monitor_info()
+        landing_y = m_info["work_y"] + m_info["work_h"] - 300
+
+        if speed <= 120.0 and current_y >= landing_y - 2:
+            self.update_geometry(self._physics_win_x, landing_y)
+            self.pet.state = "idle"
+            return
+
+        # Pointer deltas can spike when Windows hands focus back to the layered
+        # window. Cap the inherited impulse so an upward flick never leaves the
+        # pet hovering for several seconds before gravity wins.
+        self._fall_vx = max(-12.0, min(12.0, vx * 0.016))
+        self._fall_vy = max(-9.0, min(10.0, vy * 0.016))
+        self._fall_gravity = 1.05
+        self._unity_fall_started_at = time.monotonic()
+        self._unity_floor_bounced = False
+        self.pet.roll_angle = 0.0
+        if speed > 550.0 and vy < -550.0:
+            self.pet.state = "backflip"
+            self.pet.backflip_timer = 40
+            self.pet.eye_state = "star"
+            self.pet.mouth_state = "open"
+            self.create_text_popup("⭐後空翻!!⭐", 170, 120, color=YELLOW_COLOR)
+        else:
+            self.pet.state = "fall"
+            self.pet.roll_speed = max(-0.3, min(0.3, vx * 0.0004))
+            self.pet.eye_state = "dizzy"
+            self.pet.mouth_state = "open"
+            self.pet.vel_scale_x = 0.18
+            self.pet.vel_scale_y = -0.18
+            message = "滾滾滾～" if speed > 550.0 else "哇哇哇～"
+            color = ACCENT_COLOR if speed > 550.0 else PINK_COLOR
+            self.create_text_popup(message, 170, 120, color=color)
 
     def _activate_unity_renderer(self):
         if self._unity_renderer_active:
@@ -433,10 +613,33 @@ class EmojinokoMonitor:
             self.root.withdraw()
             if getattr(self, "shadow_win", None):
                 self.shadow_win.withdraw()
+            # Unity renders the compact status tag in the same 340x300 surface.
+            # Keeping the old detached Tk HUD visible made the two renderers
+            # look like unrelated pieces stuck together.
+            if getattr(self, "hud_win", None):
+                self.hud_win.withdraw()
         except Exception:
             pass
         self._sync_unity_renderer(force=True)
+        self._sync_unity_furniture()
+        # Old Canvas saves use Tk logical pixels. On a 150% DPI desktop their
+        # remembered "floor" is around mid-screen in Unity physical pixels.
+        # As soon as DPI-aware metrics arrive, let an unattached idle pet settle
+        # naturally onto the real work-area floor.
+        if getattr(self, "current_furniture_snapped", None) is None and self.pet.state != "balloon":
+            m_info = self.get_current_monitor_info()
+            landing_y = m_info["work_y"] + m_info["work_h"] - 300
+            if abs(float(self._physics_win_y) - landing_y) > 2.0:
+                self._fall_vx = 0.0
+                self._fall_vy = 1.0
+                self._fall_gravity = 1.05
+                self._fall_peak_y = float(self._physics_win_y)
+                self._unity_fall_started_at = time.monotonic()
+                self._unity_floor_bounced = True
+                self.pet.state = "fall"
         print("[Unity Renderer] Ready; legacy pet hidden and standing by as fallback.")
+        if "--debug-open-shop" in sys.argv:
+            self.root.after(250, self.open_shop)
 
     def _fallback_to_legacy_renderer(self, reason, detail=""):
         bridge = getattr(self, "unity_renderer", None)
@@ -450,8 +653,16 @@ class EmojinokoMonitor:
             self.root.lift()
             if getattr(self, "shadow_win", None):
                 self.shadow_win.deiconify()
+            if getattr(self, "hud_win", None):
+                self.hud_win.deiconify()
         except Exception:
             pass
+        # If Unity could not stay alive, restore real Tk furniture windows at
+        # the exact saved locations. The legacy implementation remains a full
+        # fallback rather than being deleted during the renderer migration.
+        for item_id, furniture in list(getattr(self, "spawned_furniture_wins", {}).items()):
+            if isinstance(furniture, UnityFurnitureProxy):
+                self.spawned_furniture_wins[item_id] = FurnitureWindow(self, item_id)
         suffix = f": {detail}" if detail else ""
         print(f"[Unity Renderer] Fallback to legacy ({reason}){suffix}")
 
@@ -462,17 +673,47 @@ class EmojinokoMonitor:
         if force:
             bridge.send(
                 {
-                    "command": "equip",
-                    "slot": "head",
-                    "item": "crown" if self.pet.equipped_accessory == "crown" else "",
+                    "command": "set_status_visible",
+                    "visible": self._unity_status_visible,
                 }
             )
+        level = self.pet_data.get("level", 1)
         bridge.send_snapshot(
             state=self.pet.state,
             emotion=self.pet.eye_state,
+            mouth=self.pet.mouth_state,
             accessory=self.pet.equipped_accessory,
+            equipment=self.pet_data.get("equipped_accessories", {}),
             look_x=self.pet.look_offset_x,
             look_y=self.pet.look_offset_y,
+            level=level,
+            xp=self.pet_data.get("xp", 0.0),
+            xp_max=PET_XP_THRESHOLD + (level - 1) * 50.0,
+            satiety=self.pet_data.get("satiety", 100.0),
+            coins=self.pet_data.get("coins", 0),
+            eat_type=getattr(self.pet, "eat_type", ""),
+            furniture=(getattr(self, "current_furniture_snapped", "") or
+                       (getattr(self, "target_furniture_id", "")
+                        if self.pet.state == "approach_furniture" else "")),
+            effects=",".join(
+                name for name, active in (
+                    ("coffee", getattr(self.pet, "coffee_timer", 0) > 0),
+                    ("candy", getattr(self.pet, "candy_timer", 0) > 0),
+                    ("bubble_tea", getattr(self.pet, "bubble_tea_timer", 0) > 0),
+                    ("spicy", getattr(self.pet, "spicy_timer", 0) > 0),
+                    ("ice", getattr(self.pet, "ice_timer", 0) > 0),
+                    ("fever", getattr(self.pet, "fever_timer", 0) > 0),
+                    ("wave", getattr(self.pet, "wave_timer", 0) > 0),
+                    ("doze", getattr(self.pet, "doze_timer", 0) > 0),
+                    ("bubble", getattr(self.pet, "bubble_timer", 0) > 0),
+                    ("stretch", getattr(self.pet, "stretch_timer", 0) > 0),
+                    ("singing", getattr(self.pet, "singing_timer", 0) > 0),
+                    ("matcha", getattr(self.pet, "matcha_timer", 0) > 0),
+                ) if active
+            ),
+            show_board=bool(getattr(self.pet, "show_board", False)),
+            board_text=getattr(self.pet, "custom_board_text", "") or "",
+            overtime=bool(getattr(self.pet, "is_overtime", False)),
         )
 
     # ──────────────────────────────────────────────────
@@ -494,7 +735,8 @@ class EmojinokoMonitor:
                     if getattr(self, "shadow_win", None) and self.shadow_win.winfo_exists():
                         self.shadow_win.attributes("-topmost", True)
                         self.shadow_win.lift()
-                    if getattr(self, "hud_win", None) and self.hud_win.winfo_exists():
+                    if (not self._unity_renderer_active and
+                            getattr(self, "hud_win", None) and self.hud_win.winfo_exists()):
                         self.hud_win.attributes("-topmost", True)
                         self.hud_win.lift()
                     for win in getattr(self, "spawned_memo_wins", {}).values():
@@ -815,8 +1057,16 @@ class EmojinokoMonitor:
         if self.pet.state in ("fall", "backflip"):
             m_info = self.get_current_monitor_info()
             landing_y = m_info["work_y"] + m_info["work_h"] - 300
-            current_x = self.root.winfo_x()
-            current_y = self.root.winfo_y()
+            # A withdrawn Tk window does not reliably advance winfo_x/y after
+            # geometry updates. Unity mode therefore uses the authoritative
+            # coordinates maintained by update_geometry; otherwise every frame
+            # restarts from the release point and the fall appears frozen.
+            if getattr(self, "_unity_renderer_active", False):
+                current_x = float(self._physics_win_x)
+                current_y = float(self._physics_win_y)
+            else:
+                current_x = self.root.winfo_x()
+                current_y = self.root.winfo_y()
             
             # 追蹤本次墜落期間的最高空位置 (Y 軸越小代表越高)
             self._fall_peak_y = min(getattr(self, "_fall_peak_y", current_y), current_y)
@@ -1048,11 +1298,27 @@ class EmojinokoMonitor:
                     perfect_prob = 0.90 - 0.70 * (fall_height - 100) / 400.0
                 
                 is_perfect_land = (random.random() < perfect_prob)
+                unity_fall = getattr(self, "_unity_renderer_active", False)
+                if unity_fall:
+                    elapsed = time.monotonic() - getattr(
+                        self, "_unity_fall_started_at", time.monotonic())
+                    # At most one short squash/bounce in Unity mode. The old
+                    # random multi-bounce chain was the source of the apparent
+                    # endless floating and made the taskbar stop feel optional.
+                    may_bounce_once = (
+                        not getattr(self, "_unity_floor_bounced", False)
+                        and elapsed < 1.25
+                        and self._fall_vy > 9.0
+                    )
+                    is_perfect_land = not may_bounce_once
                 
                 # 若沒能完美落地，且下落速度大於 4.5，則進行反彈
                 if not is_perfect_land and (self._fall_vy > 4.5):
                     new_y = landing_y
-                    self._fall_vy = -self._fall_vy * 0.55  # 彈力係數 55%
+                    bounce_factor = 0.28 if unity_fall else 0.55
+                    self._fall_vy = -self._fall_vy * bounce_factor
+                    if unity_fall:
+                        self._unity_floor_bounced = True
                     self._fall_vx *= 0.7  # 地面摩擦力
                     
                     # 落地彈跳果凍變形
@@ -1104,6 +1370,8 @@ class EmojinokoMonitor:
                         
                     self.root.after(800, lambda: self.pet.restore_eye())
                     self.save_pet_savegame()
+                    if getattr(self, "_unity_renderer_active", False):
+                        save_config({"pet_x": int(new_x), "pet_y": int(new_y)})
             
             # 3. 若處於普通空中下墜狀態，使地瓜球滾動
             if self.pet.state == "fall":
@@ -1652,6 +1920,13 @@ class EmojinokoMonitor:
         
         if not IS_WINDOWS:
             return left_bound, right_bound
+
+        if getattr(self, "_unity_renderer_active", False):
+            metrics = getattr(self, "_unity_desktop_metrics", None)
+            if metrics and metrics.get("mon_w", 0) > 0:
+                left_bound = metrics["mon_x"]
+                right_bound = left_bound + metrics["mon_w"] - 340
+                return left_bound, right_bound
             
         try:
             import ctypes
@@ -1918,6 +2193,8 @@ class EmojinokoMonitor:
                 # 珍珠奶茶 Buff 額外 XP 加成 (+20%)
                 if getattr(self.pet, "bubble_tea_timer", 0) > 0:
                     gained_xp *= 1.20
+                if getattr(self.pet, "matcha_timer", 0) > 0:
+                    gained_xp *= 1.30
                     
                 self.pet_data["xp"] = self.pet_data.get("xp", 0.0) + gained_xp
                 self.pet_data["satiety"] = min(100.0, self.pet_data.get("satiety", 100.0) + gained_satiety)
@@ -2050,11 +2327,31 @@ class EmojinokoMonitor:
 
     def create_text_popup(self, text, x, y, color=YELLOW_COLOR):
         """在 Canvas 上生成帶有黑色高對比輪廓的上升漂浮文字特效 (確保在白底桌面上亦極度清晰)"""
+        bridge = getattr(self, "unity_renderer", None)
+        if getattr(self, "_unity_renderer_active", False) and bridge is not None:
+            bridge.show_popup(text, x, y, color=color)
         text_ids = create_outlined_text(self.canvas, x, y, text=text, fill=color, font=("微軟正黑體", 10, "bold"), outline="#11111b", width=1.2, tags="overlay")
         self.pet.text_popups.append({"ids": text_ids, "x": x, "y": y, "life": 40})
 
     def get_current_monitor_info(self):
         """獲取當前視窗所屬/最鄰近螢幕的解析度與工作區邊界 (支援 Windows 雙螢幕與多螢幕)"""
+        if getattr(self, "_unity_renderer_active", False):
+            metrics = getattr(self, "_unity_desktop_metrics", None)
+            if metrics and metrics.get("work_w", 0) > 0 and metrics.get("work_h", 0) > 0:
+                # Unity and its transparent stage are DPI-aware. Reusing the
+                # physical work-area pixels it reports avoids treating Tk's
+                # 150%-scaled logical height as a Unity screen coordinate.
+                return {
+                    "mon_x": metrics.get("mon_x", metrics["work_x"]),
+                    "mon_y": metrics.get("mon_y", metrics["work_y"]),
+                    "mon_w": metrics.get("mon_w", metrics["work_w"]),
+                    "mon_h": metrics.get("mon_h", metrics["work_h"]),
+                    "work_x": metrics["work_x"],
+                    "work_y": metrics["work_y"],
+                    "work_w": metrics["work_w"],
+                    "work_h": metrics["work_h"],
+                }
+
         # 預設單螢幕回退值
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
@@ -2077,13 +2374,6 @@ class EmojinokoMonitor:
             import ctypes
             user32 = ctypes.windll.user32
             
-            # 取得 Tkinter 視窗 HWND
-            hwnd_str = self.root.wm_frame()
-            hwnd = int(hwnd_str, 16) if hwnd_str else 0
-            
-            # MONITOR_DEFAULTTONEAREST = 2
-            hmonitor = user32.MonitorFromWindow(hwnd, 2)
-            
             class RECT(ctypes.Structure):
                 _fields_ = [
                     ("left", ctypes.c_long),
@@ -2091,6 +2381,23 @@ class EmojinokoMonitor:
                     ("right", ctypes.c_long),
                     ("bottom", ctypes.c_long)
                 ]
+
+            class POINT(ctypes.Structure):
+                _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+            # A withdrawn Tk HWND can remain associated with the monitor it was
+            # hidden on. Unity mode therefore selects the monitor from the
+            # authoritative desktop pet coordinates instead.
+            if getattr(self, "_unity_renderer_active", False):
+                point = POINT(
+                    int(getattr(self, "_physics_win_x", 0) + 170),
+                    int(getattr(self, "_physics_win_y", 0) + 205),
+                )
+                hmonitor = user32.MonitorFromPoint(point, 2)
+            else:
+                hwnd_str = self.root.wm_frame()
+                hwnd = int(hwnd_str, 16) if hwnd_str else 0
+                hmonitor = user32.MonitorFromWindow(hwnd, 2)
 
             class MONITORINFO(ctypes.Structure):
                 _fields_ = [
@@ -2432,6 +2739,10 @@ class EmojinokoMonitor:
     # ──────────────────────────────────────────────────
     def _show_context_menu(self, event):
         """滑鼠右鍵點擊，彈出快捷選單"""
+        if getattr(self, "_unity_renderer_active", False):
+            self._show_unity_action_menu(event.x_root, event.y_root)
+            return
+
         # 動態更新恢復便利貼子選單
         if hasattr(self, "undo_menu"):
             self.undo_menu.delete(0, tk.END)
@@ -2457,9 +2768,151 @@ class EmojinokoMonitor:
                     pass
         self.context_menu.post(event.x_root, event.y_root)
 
+    def _show_unity_action_menu(self, x_root, y_root):
+        """顯示與 Unity 地瓜球同色系的功能面板。"""
+        status_label = "隱藏狀態" if self._unity_status_visible else "顯示狀態"
+        common = [
+            ("💬  找地瓜球聊天", self.open_ai_chat),
+            ("🍠  投餵地瓜球", self.simulate_usage),
+            (f"📊  {status_label}", self._toggle_unity_status_hud),
+            ("☕  請喝咖啡", self.buy_coffee),
+            ("✊  猜拳", self.play_rps),
+            ("🏀  投籃", self.toggle_basketball_game),
+            ("🍎  接水果", self.toggle_fruit_catcher),
+            ("🎰  幸運拉霸", self.toggle_slot_machine),
+            ("🛒  道具與家具", self._open_unity_shop_from_menu),
+            ("📝  新增便利貼", self.add_new_memo),
+            ("↩  回復便利貼", lambda: self._show_deleted_memos_menu(x_root, y_root)),
+            ("⌨  快速鍵", self.open_hotkey_settings),
+            ("🔄  檢查更新", self.trigger_manual_update_check),
+        ]
+        if not self.STANDALONE:
+            common[1:1] = [
+                ("↻  立即對帳", self.manual_refresh),
+                ("💰  目前費用", self.show_current_cost),
+                ("▥  Token 統計", self.open_detailed_stats),
+            ]
+            common.append(("⏏  登出帳號", self._logout))
+        # Column-major layout: insert at the first row of the right column so
+        # the original exit action is always visible, rather than buried at
+        # the bottom-right edge of the popup.
+        exit_index = math.ceil((len(common) + 1) / 2)
+        common.insert(exit_index, ("✕  退出寵物", self.root.destroy))
+        self._unity_action_menu = TokenPetActionMenu(
+            self,
+            title="地瓜球要做什麼？",
+            entries=common,
+            x=int(x_root),
+            y=int(y_root),
+        )
+
+    def _show_deleted_memos_menu(self, x_root, y_root):
+        deleted = self.pet_data.get("deleted_memos", [])[:8]
+        if deleted:
+            entries = []
+            for item in deleted:
+                text = item.get("text", "").strip()
+                preview = text[:10] + "…" if len(text) > 10 else (text or "空白便利貼")
+                entries.append((f"📝  {preview}", lambda memo_id=item["id"]: self.restore_memo(memo_id)))
+        else:
+            entries = [("目前沒有可回復的便利貼", lambda: None)]
+        self._unity_action_menu = TokenPetActionMenu(
+            self,
+            title="回復便利貼",
+            entries=entries,
+            x=int(x_root),
+            y=int(y_root),
+        )
+
+    def _toggle_unity_status_hud(self):
+        self._unity_status_visible = not self._unity_status_visible
+        save_config({"unity_status_visible": self._unity_status_visible})
+        bridge = getattr(self, "unity_renderer", None)
+        if bridge is not None:
+            bridge.send(
+                {
+                    "command": "set_status_visible",
+                    "visible": self._unity_status_visible,
+                }
+            )
+
+    def _open_unity_shop_from_menu(self):
+        """Let the native popup finish its mouse-release/focus teardown first."""
+        self.root.after(120, self.open_shop)
+
     def open_shop(self):
-        """點選商店，打開施工中視窗"""
-        ShopWindow(self.root, self)
+        """Open or raise the shared shop in both Canvas and Unity modes."""
+        bridge = getattr(self, "unity_renderer", None)
+        if getattr(self, "_unity_renderer_active", False) and bridge is not None:
+            try:
+                if bridge.show_shop(self._unity_shop_payload()):
+                    print("[Unity Shop] Shop payload sent to renderer.")
+                    return
+                print("[Unity Shop] Renderer connection unavailable; using Canvas fallback.")
+            except Exception as exc:
+                import traceback
+                print(f"[Unity Shop] Failed to build or send shop payload: {exc}")
+                traceback.print_exc()
+
+        existing = getattr(self, "shop_win", None)
+        try:
+            if existing is not None and existing.win.winfo_exists():
+                existing.win.deiconify()
+                existing.win.lift()
+                existing.win.focus_force()
+                return
+        except Exception:
+            self.shop_win = None
+
+        self.shop_win = ShopWindow(self.root, self)
+        try:
+            self.shop_win.win.deiconify()
+            self.shop_win.win.lift()
+            self.shop_win.win.focus_force()
+        except Exception:
+            pass
+
+    def _shop_controller(self):
+        controller = getattr(self, "_unity_shop_controller", None)
+        if controller is None:
+            controller = ShopWindow(self.root, self, build_ui=False)
+            self._unity_shop_controller = controller
+        return controller
+
+    def _unity_shop_payload(self):
+        controller = self._shop_controller()
+        return {
+            "coins": int(self.pet_data.get("coins", 0)),
+            "equipped": self.pet_data.get("equipped_accessory") or "",
+            "equipped_items": list(
+                self.pet_data.get("equipped_accessories", {}).values()
+            ),
+            "owned": list(self.pet_data.get("accessories", [])),
+            "owned_furniture": list(self.pet_data.get("furniture", [])),
+            "spawned_furniture": list(self.pet_data.get("spawned_furniture", [])),
+            "items": [
+                {
+                    "id": item["id"],
+                    "name": item["name"],
+                    "description": item.get("desc", ""),
+                    "category": item.get("type", "accessory"),
+                    "price": int(item.get("price", 0)),
+                }
+                for item in controller.items
+            ],
+        }
+
+    def _handle_unity_shop_action(self, item_id):
+        if not item_id:
+            return
+        controller = self._shop_controller()
+        item = next((entry for entry in controller.items if entry["id"] == item_id), None)
+        if item is None:
+            return
+        controller._on_item_action(item)
+        bridge = getattr(self, "unity_renderer", None)
+        if bridge is not None:
+            bridge.show_shop(self._unity_shop_payload())
 
     def play_rps(self):
         """開始猜拳小遊戲"""
@@ -2912,7 +3365,9 @@ class EmojinokoMonitor:
                     }
                 )
             method = "deiconify" if self._unity_renderer_visible else "withdraw"
-            auxiliary_windows = [getattr(self, "hud_win", None)]
+            # The Unity HUD is inside the renderer window; only genuinely
+            # separate tools need their Tk windows shown/hidden here.
+            auxiliary_windows = []
             for collection_name in ("spawned_memo_wins", "spawned_furniture_wins"):
                 auxiliary_windows.extend(getattr(self, collection_name, {}).values())
             for win in auxiliary_windows:
@@ -3018,17 +3473,39 @@ class EmojinokoMonitor:
         """將地瓜球狀態寫回 .credentials"""
         save_config({"pet_game": self.pet_data})
 
+    def _sync_unity_furniture(self):
+        bridge = getattr(self, "unity_renderer", None)
+        if not getattr(self, "_unity_renderer_active", False) or bridge is None:
+            return
+        items = []
+        for item_id, furniture in self.spawned_furniture_wins.items():
+            try:
+                items.append({
+                    "id": item_id,
+                    "x": int(furniture.winfo_x()),
+                    "y": int(furniture.winfo_y()),
+                    "width": int(furniture.winfo_width()),
+                    "height": int(furniture.winfo_height()),
+                })
+            except Exception:
+                continue
+        bridge.sync_furniture(items)
+
     def spawn_furniture(self, item_id):
         if item_id in self.spawned_furniture_wins:
             self.despawn_furniture(item_id)
             
-        win = FurnitureWindow(self, item_id)
+        if unity_renderer_requested(self.config):
+            win = UnityFurnitureProxy(self, item_id)
+        else:
+            win = FurnitureWindow(self, item_id)
         self.spawned_furniture_wins[item_id] = win
         
         spawned = self.pet_data.setdefault("spawned_furniture", [])
         if item_id not in spawned:
             spawned.append(item_id)
             self.save_pet_savegame()
+        self._sync_unity_furniture()
 
     def despawn_furniture(self, item_id):
         if getattr(self, "current_furniture_snapped", None) == item_id:
@@ -3056,6 +3533,7 @@ class EmojinokoMonitor:
         if item_id in spawned:
             spawned.remove(item_id)
             self.save_pet_savegame()
+        self._sync_unity_furniture()
 
     def restore_spawned_furniture(self):
         spawned = self.pet_data.get("spawned_furniture", [])
@@ -4015,6 +4493,190 @@ class SlotMachineWindow(tk.Toplevel):
 
 
 
+class TokenPetActionMenu(tk.Toplevel):
+    """Warm, compact replacement for the native Windows menu in Unity mode."""
+
+    BG = "#fff4d2"
+    HEADER_BG = "#f6b942"
+    TEXT = "#4f2a14"
+    HOVER = "#ffdc83"
+    BORDER = "#7b431e"
+
+    def __init__(self, monitor, title, entries, x, y):
+        previous = getattr(monitor, "_unity_action_menu", None)
+        if previous is not None:
+            try:
+                previous.destroy()
+            except Exception:
+                pass
+
+        super().__init__(monitor.root)
+        self.monitor = monitor
+        self.overrideredirect(True)
+        self.attributes("-topmost", True)
+        self.configure(bg=self.BORDER)
+
+        columns = 2 if len(entries) > 5 else 1
+        rows = max(1, math.ceil(len(entries) / columns))
+        width = 264 if columns == 2 else 236
+        header_height = 34
+        row_height = 27
+        height = header_height + rows * row_height + 8
+
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        left = max(8, min(int(x), screen_width - width - 8))
+        top = max(8, min(int(y), screen_height - height - 48))
+        self.geometry(f"{width}x{height}+{left}+{top}")
+
+        shell = tk.Frame(
+            self,
+            bg=self.BG,
+            highlightbackground=self.BORDER,
+            highlightthickness=2,
+            bd=0,
+        )
+        shell.pack(fill=tk.BOTH, expand=True)
+        header = tk.Label(
+            shell,
+            text=title,
+            bg=self.HEADER_BG,
+            fg=self.TEXT,
+            anchor="w",
+            padx=11,
+            font=("Microsoft JhengHei UI", 9, "bold"),
+        )
+        header.pack(fill=tk.X, padx=2, pady=(2, 3), ipady=5)
+
+        grid = tk.Frame(shell, bg=self.BG)
+        grid.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
+        for column in range(columns):
+            grid.grid_columnconfigure(column, weight=1, uniform="menu tokens")
+
+        for index, (label, command) in enumerate(entries):
+            row = index % rows
+            column = index // rows
+            is_exit = "退出寵物" in label
+            button_bg = "#ffe1d5" if is_exit else self.BG
+            button_fg = "#a33a2b" if is_exit else self.TEXT
+            button_hover = "#ffc9b8" if is_exit else self.HOVER
+            button = tk.Label(
+                grid,
+                text=label,
+                bg=button_bg,
+                fg=button_fg,
+                anchor="w",
+                padx=7,
+                cursor="hand2",
+                font=("Microsoft JhengHei UI", 8, "bold" if is_exit else "normal"),
+            )
+            button.grid(
+                row=row,
+                column=column,
+                sticky="nsew",
+                padx=2,
+                pady=1,
+                ipady=4,
+            )
+            button.bind(
+                "<Enter>",
+                lambda _event, widget=button, color=button_hover: widget.configure(bg=color),
+            )
+            button.bind(
+                "<Leave>",
+                lambda _event, widget=button, color=button_bg: widget.configure(bg=color),
+            )
+            button.bind(
+                "<ButtonRelease-1>",
+                lambda _event, callback=command: self._invoke(callback),
+            )
+
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self.bind("<ButtonPress-3>", lambda _event: self.destroy())
+        self.bind("<FocusOut>", self._on_focus_out)
+        self._outside_binding = self.bind_class(
+            "all", "<ButtonPress-1>", self._dismiss_if_outside, add="+"
+        )
+        self._global_left_was_down = self._is_global_left_button_down()
+        self.after(20, self._take_focus)
+        self.after(25, self._poll_global_dismiss)
+
+    def _take_focus(self):
+        try:
+            self.lift()
+            self.focus_force()
+        except Exception:
+            pass
+
+    def _invoke(self, callback):
+        self.destroy()
+        self.monitor.root.after(0, callback)
+
+    def _dismiss_if_outside(self, event):
+        try:
+            inside = (
+                self.winfo_rootx() <= event.x_root < self.winfo_rootx() + self.winfo_width()
+                and self.winfo_rooty() <= event.y_root < self.winfo_rooty() + self.winfo_height()
+            )
+            if not inside:
+                self.destroy()
+        except Exception:
+            pass
+
+    def _on_focus_out(self, _event):
+        self.after(10, self._close_if_focus_left)
+
+    def _close_if_focus_left(self):
+        try:
+            focused = self.focus_get()
+            if focused is None or focused.winfo_toplevel() != self:
+                self.destroy()
+        except Exception:
+            self.destroy()
+
+    @staticmethod
+    def _is_global_left_button_down():
+        if not IS_WINDOWS:
+            return False
+        try:
+            return bool(ctypes.windll.user32.GetAsyncKeyState(0x01) & 0x8000)
+        except Exception:
+            return False
+
+    def _poll_global_dismiss(self):
+        """Close like a native popup even when the click targets another process."""
+        try:
+            if not self.winfo_exists():
+                return
+            is_down = self._is_global_left_button_down()
+            if is_down and not self._global_left_was_down:
+                pointer_x, pointer_y = self.winfo_pointerxy()
+                inside = (
+                    self.winfo_rootx() <= pointer_x < self.winfo_rootx() + self.winfo_width()
+                    and self.winfo_rooty() <= pointer_y < self.winfo_rooty() + self.winfo_height()
+                )
+                if not inside:
+                    self.destroy()
+                    return
+            self._global_left_was_down = is_down
+            self.after(25, self._poll_global_dismiss)
+        except Exception:
+            pass
+
+    def destroy(self):
+        binding = getattr(self, "_outside_binding", None)
+        if binding:
+            try:
+                self.unbind_class("all", "<ButtonPress-1>", binding)
+            except Exception:
+                pass
+            self._outside_binding = None
+        try:
+            super().destroy()
+        except Exception:
+            pass
+
+
 class HudWindow(tk.Toplevel):
     """專門用於貼地顯示等級徽章、漸層經驗條、飽食度與地瓜幣的懸浮膠囊風 HUD 看板視窗"""
     def __init__(self, monitor):
@@ -4335,6 +4997,83 @@ class MemoWindow(tk.Toplevel):
         self.text_widget.insert(tk.INSERT, char)
         self.on_text_change()
         return "break"
+
+
+class UnityFurnitureProxy:
+    """Tk-compatible position model for furniture rendered by Unity.
+
+    Existing game physics intentionally talks to the same winfo-style surface,
+    which lets the Unity migration preserve every old interaction without
+    duplicating the behaviour engine or deleting the Tk fallback.
+    """
+
+    SIZES = {
+        "futon": (180, 100),
+        "laptop": (180, 115),
+        "night_lamp": (120, 110),
+        "succulent_pot": (110, 100),
+        "lazy_sofa": (160, 100),
+        "pixel_tv": (140, 110),
+        "kotatsu": (170, 100),
+        "trampoline": (140, 60),
+    }
+
+    def __init__(self, monitor, item_id):
+        self.monitor = monitor
+        self.item_id = item_id
+        self.width, self.height = self.SIZES.get(item_id, (140, 80))
+        screen_w = monitor.root.winfo_screenwidth()
+        screen_h = monitor.root.winfo_screenheight()
+        default_x = (screen_w - self.width) // 2 + (
+            150 if item_id == "laptop" else -150
+        )
+        default_y = screen_h - self.height - 120
+        saved = monitor.pet_data.get("furniture_positions", {}).get(item_id, {})
+        self.x = int(saved.get("x", default_x))
+        self.y = int(saved.get("y", default_y))
+        if self.x < -50 or self.x > screen_w - 50:
+            self.x = default_x
+        if self.y < -50 or self.y > screen_h - 50:
+            self.y = default_y
+        self._exists = True
+
+    def winfo_x(self):
+        return self.x
+
+    def winfo_y(self):
+        return self.y
+
+    def winfo_width(self):
+        return self.width
+
+    def winfo_height(self):
+        return self.height
+
+    def winfo_exists(self):
+        return self._exists
+
+    def set_position(self, x, y):
+        self.x = int(x)
+        self.y = int(y)
+
+    def geometry(self, value):
+        match = re.search(r"\+(-?\d+)\+(-?\d+)$", str(value))
+        if match:
+            self.set_position(match.group(1), match.group(2))
+
+    def attributes(self, *_args, **_kwargs):
+        return None
+
+    def lift(self):
+        return None
+
+    def destroy(self):
+        self._exists = False
+
+    def trigger_bounce(self):
+        bridge = getattr(self.monitor, "unity_renderer", None)
+        if bridge is not None:
+            bridge.trigger_furniture(self.item_id, "bounce")
 
 
 class FurnitureWindow(tk.Toplevel):
@@ -4733,6 +5472,11 @@ def _start_app():
     
     # 單實例檢查 (防止多個相同目錄的實例同時執行導致存檔與熱更新互鎖)
     if not check_single_instance():
+        # The normal integrated launcher uses pythonw. A modal here can become
+        # invisible and leave a duplicate background process behind, so a
+        # second integrated launch simply exits while the existing pet stays.
+        if "--standalone" in sys.argv and "--unity-poc" in sys.argv:
+            return
         try:
             temp_r = tk.Tk()
             temp_r.withdraw()

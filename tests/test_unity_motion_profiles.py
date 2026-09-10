@@ -11,6 +11,7 @@ PROFILE_PATH = (
     / "Resources"
     / "motion_profiles.json"
 )
+LIMB_RIG_PATH = PROFILE_PATH.parents[1] / "Scripts" / "TokenPetLimbRig.cs"
 
 
 class UnityMotionProfileTests(unittest.TestCase):
@@ -35,6 +36,12 @@ class UnityMotionProfileTests(unittest.TestCase):
                 self.assertLessEqual(abs(profile["bob"]), 0.8)
                 self.assertLess(abs(profile["squash"]), 0.5)
                 self.assertLess(abs(profile["stretch"]), 0.5)
+
+    def test_leg_roots_are_embedded_inside_body(self):
+        source = LIMB_RIG_PATH.read_text(encoding="utf-8")
+        self.assertIn("LegRootY = -0.73f", source)
+        self.assertIn("new Vector2(-0.36f, LegRootY)", source)
+        self.assertIn("new Vector2(0.36f, LegRootY)", source)
 
 
 if __name__ == "__main__":

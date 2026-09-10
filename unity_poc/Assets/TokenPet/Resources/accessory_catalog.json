@@ -1,13 +1,21 @@
 {
   "items": [
-    {
-      "id": "crown",
-      "slot": "head",
-      "resource": "procedural:crown",
-      "offset_x": 0.0,
-      "offset_y": 0.08,
-      "scale": 0.9,
-      "sorting_order": 20
-    }
+    { "id": "char_mask", "slot": "face", "resource": "sprite:AccessoriesV2/char_mask", "offset_x": 0.0, "offset_y": 0.16, "scale": 1.02, "sorting_order": 24 },
+    { "id": "char_helmet", "slot": "head", "resource": "sprite:AccessoriesV2/char_helmet", "offset_x": 0.0, "offset_y": -0.03, "scale": 1.05, "sorting_order": 23 },
+    { "id": "sunglasses", "slot": "face", "resource": "sprite:AccessoriesV2/sunglasses", "offset_x": 0.0, "offset_y": 0.15, "scale": 0.88, "sorting_order": 24 },
+    { "id": "scholar_cap", "slot": "head", "resource": "sprite:AccessoriesV2/scholar_cap", "offset_x": 0.0, "offset_y": 0.02, "scale": 0.88, "sorting_order": 24 },
+    { "id": "cat_ears", "slot": "head", "resource": "sprite:AccessoriesV2/cat_ears", "offset_x": 0.0, "offset_y": 0.00, "scale": 0.92, "sorting_order": 24 },
+    { "id": "crown", "slot": "head", "resource": "sprite:AccessoriesV2/crown", "offset_x": 0.0, "offset_y": 0.04, "scale": 0.78, "sorting_order": 24 },
+    { "id": "rainbow", "slot": "body", "resource": "sprite:AccessoriesV2/rainbow", "offset_x": 0.0, "offset_y": 0.0, "scale": 1.42, "sorting_order": 8 },
+    { "id": "halo", "slot": "head", "resource": "sprite:AccessoriesV2/halo", "offset_x": 0.0, "offset_y": 0.28, "scale": 0.88, "sorting_order": 24 },
+    { "id": "gentleman_hat", "slot": "head", "resource": "sprite:AccessoriesV2/gentleman_hat", "offset_x": 0.0, "offset_y": 0.04, "scale": 0.90, "sorting_order": 24 },
+    { "id": "demon_horns", "slot": "head", "resource": "sprite:AccessoriesV2/demon_horns", "offset_x": 0.0, "offset_y": -0.02, "scale": 0.90, "sorting_order": 24 },
+    { "id": "star_sunglasses", "slot": "face", "resource": "sprite:AccessoriesV2/star_sunglasses", "offset_x": 0.0, "offset_y": 0.15, "scale": 0.88, "sorting_order": 24 },
+    { "id": "bowtie", "slot": "neck", "resource": "sprite:AccessoriesV2/bowtie", "offset_x": 0.0, "offset_y": -0.73, "scale": 0.48, "sorting_order": 24 },
+    { "id": "sakura_hairpin", "slot": "head", "resource": "sprite:AccessoriesV2/sakura_hairpin", "offset_x": 0.48, "offset_y": -0.10, "scale": 0.52, "sorting_order": 24 },
+    { "id": "gamer_headset", "slot": "face", "resource": "sprite:AccessoriesV2/gamer_headset", "offset_x": 0.0, "offset_y": 0.18, "scale": 1.03, "sorting_order": 24 },
+    { "id": "wizard_hat", "slot": "head", "resource": "sprite:AccessoriesV2/wizard_hat", "offset_x": 0.0, "offset_y": 0.10, "scale": 0.98, "sorting_order": 24 },
+    { "id": "clover_sprout", "slot": "head", "resource": "sprite:AccessoriesV2/clover_sprout", "offset_x": 0.0, "offset_y": 0.04, "scale": 0.52, "sorting_order": 24 },
+    { "id": "bandage", "slot": "face", "resource": "sprite:AccessoriesV2/bandage", "offset_x": 0.48, "offset_y": 0.48, "scale": 0.42, "sorting_order": 24 }
   ]
 }

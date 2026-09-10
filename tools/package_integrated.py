@@ -18,6 +18,7 @@ SOURCE_FILES = (
     "GITHUB_RELEASES.md",
     "README.md",
     "requirements.txt",
+    "collect_debug_logs.cmd",
     "run_unity_preview.cmd",
     "UNITY_POC.md",
     "emojinoko_game.py",

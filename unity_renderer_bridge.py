@@ -88,7 +88,9 @@ class UnityRendererBridge:
 
     def start(self) -> bool:
         """Start the player and listener. Return False without side effects if absent."""
+        print(f"[Unity Bridge] resolved executable={self.executable}")
         if not self.executable.is_file():
+            print("[Unity Bridge] executable is missing")
             self._queue_event(
                 {
                     "event_name": "start_failed",
@@ -103,6 +105,7 @@ class UnityRendererBridge:
         self._server.listen(1)
         self._server.settimeout(0.5)
         port = self._server.getsockname()[1]
+        print(f"[Unity Bridge] listening on 127.0.0.1:{port}")
 
         command = [
             str(self.executable),
@@ -132,7 +135,9 @@ class UnityRendererBridge:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            print(f"[Unity Bridge] player started pid={self.process.pid}")
         except OSError as exc:
+            print(f"[Unity Bridge] player start failed: {exc!r}")
             self._queue_event({"event_name": "start_failed", "message": str(exc)})
             self._close_server()
             return False
@@ -288,6 +293,7 @@ class UnityRendererBridge:
 
         if self.process is not None and self.process.poll() is not None and not self._exit_reported:
             self._exit_reported = True
+            print(f"[Unity Bridge] player exited return_code={self.process.returncode}")
             events.append(
                 {
                     "event_name": "process_exit",
@@ -333,6 +339,7 @@ class UnityRendererBridge:
                     return
                 try:
                     connection, _address = self._server.accept()
+                    print("[Unity Bridge] player connected to IPC")
                     break
                 except socket.timeout:
                     continue
@@ -352,9 +359,11 @@ class UnityRendererBridge:
                     if isinstance(payload, dict):
                         self._queue_event(payload)
                 except json.JSONDecodeError as exc:
+                    print(f"[Unity Bridge] protocol error: {exc}")
                     self._queue_event({"event_name": "protocol_error", "message": str(exc)})
 
             if not self._stop_event.is_set():
+                print("[Unity Bridge] IPC connection closed by player")
                 self._queue_event(
                     {
                         "event_name": "connection_lost",
@@ -363,6 +372,7 @@ class UnityRendererBridge:
                 )
         except OSError as exc:
             if not self._stop_event.is_set():
+                print(f"[Unity Bridge] socket error: {exc!r}")
                 self._queue_event({"event_name": "connection_lost", "message": str(exc)})
         finally:
             self._connected_event.clear()

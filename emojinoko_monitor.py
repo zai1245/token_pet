@@ -53,6 +53,62 @@ def _accessory_slot(item_id):
 # 當前地瓜球 App 版本
 CURRENT_VERSION = "2.9.4"
 
+
+class _RuntimeTee:
+    """Mirror console diagnostics to a persistent UTF-8 log file."""
+
+    def __init__(self, console, log_file):
+        self.console = console
+        self.log_file = log_file
+        self.lock = threading.Lock()
+
+    def write(self, text):
+        with self.lock:
+            if self.console is not None:
+                try:
+                    self.console.write(text)
+                except Exception:
+                    pass
+            self.log_file.write(text)
+            self.log_file.flush()
+        return len(text)
+
+    def flush(self):
+        with self.lock:
+            if self.console is not None:
+                try:
+                    self.console.flush()
+                except Exception:
+                    pass
+            self.log_file.flush()
+
+
+def _install_runtime_log():
+    """Persist startup and renderer diagnostics for release feedback."""
+    try:
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        log_dir = os.path.join(base, "TokenPet", "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, "TokenPet-runtime.log")
+        previous_path = os.path.join(log_dir, "TokenPet-runtime.previous.log")
+        if os.path.exists(log_path) and os.path.getsize(log_path) > 4 * 1024 * 1024:
+            try:
+                os.replace(log_path, previous_path)
+            except OSError:
+                pass
+        log_file = open(log_path, "a", encoding="utf-8", buffering=1)
+        sys.stdout = _RuntimeTee(sys.__stdout__, log_file)
+        sys.stderr = _RuntimeTee(sys.__stderr__, log_file)
+        print("\n" + "=" * 72)
+        print(f"[Runtime] started={datetime.now().isoformat(timespec='seconds')}")
+        print(f"[Runtime] python={sys.executable}")
+        print(f"[Runtime] cwd={os.getcwd()}")
+        print(f"[Runtime] argv={sys.argv}")
+        print(f"[Runtime] log={log_path}")
+        return log_path
+    except Exception:
+        return None
+
 # Windows API 用於檢測系統全局滑鼠與鍵盤活動，以判定使用者是否在「上班/使用電腦」
 if IS_WINDOWS:
     class LASTINPUTINFO(ctypes.Structure):
@@ -485,7 +541,10 @@ class EmojinokoMonitor:
                 return
 
         if not self._unity_renderer_active:
-            timed_out = time.monotonic() - self._unity_renderer_started_at > 15.0
+            # First launch on another PC may be delayed by antivirus scanning
+            # the Unity runtime. Give a cold start enough time before falling
+            # back to Canvas; the legacy pet stays visible while waiting.
+            timed_out = time.monotonic() - self._unity_renderer_started_at > 45.0
             if timed_out or not bridge.running:
                 self._fallback_to_legacy_renderer("startup_timeout")
                 return
@@ -5512,4 +5571,5 @@ def _start_app():
 
 
 if __name__ == "__main__":
+    _install_runtime_log()
     _start_app()

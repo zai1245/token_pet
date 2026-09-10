@@ -16,6 +16,10 @@ https://github.com/zai1245/token_pet/releases
 `run_unity_preview.cmd`。不要單獨啟動 `TokenPetUnity.exe`，否則不會有 Python
 負責的完整功能。
 
+若 Unity 小視窗出現後仍停留在 Canvas，先等待最多 45 秒。仍未切換時，雙擊
+`collect_debug_logs.cmd`，桌面會產生 `TokenPet-debug-logs-....zip`；回報問題時
+附上這個 ZIP。它包含 Python/IPC 診斷與 Unity Player log，不包含登入密碼。
+
 ## 維護者一鍵發佈
 
 需求：Git、Python、GitHub CLI `gh`、Unity `6000.0.65f1`，且 `gh auth status`

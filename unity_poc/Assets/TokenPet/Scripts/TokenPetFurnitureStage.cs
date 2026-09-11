@@ -32,6 +32,7 @@ namespace TokenPet
             public Transform root;
             public float bounce;
             public float bounceVelocity;
+            public float feedbackTime;
         }
 
         private const float WorldUnitsPerPixel = 2.20f / 104f;
@@ -48,6 +49,7 @@ namespace TokenPet
         private TokenPetWindowsOverlay overlay;
         private Camera targetCamera;
         private string draggingId;
+        private string moveArmedId;
         private Vector2Int dragCursorStart;
         private Vector2 dragItemStart;
         private string contextId;
@@ -115,10 +117,19 @@ namespace TokenPet
 
         public void Trigger(string id, string action)
         {
-            if (string.Equals(action, "bounce", StringComparison.OrdinalIgnoreCase) &&
-                views.TryGetValue(id ?? "", out FurnitureView view))
+            if (!views.TryGetValue(id ?? "", out FurnitureView view))
+                return;
+
+            if (string.Equals(action, "bounce", StringComparison.OrdinalIgnoreCase))
             {
                 view.bounceVelocity += 4.5f;
+            }
+            else
+            {
+                // Immediate acknowledgement while the pet is approaching.
+                // The Python behaviour engine remains authoritative for the
+                // resulting pose and rewards.
+                view.feedbackTime = 0.7f;
             }
         }
 
@@ -135,18 +146,22 @@ namespace TokenPet
             return FindAt(cursor) != null;
         }
 
-        public bool HandlePointer()
+        public bool HandlePointer(bool nativeContextClick = false,
+            Vector2Int nativeContextCursor = default)
         {
             if (overlay == null || !overlay.IsDesktopStage)
                 return false;
 
-            Vector2Int cursor = overlay.GetCursorPosition();
+            Vector2Int cursor = nativeContextClick
+                ? nativeContextCursor
+                : overlay.GetCursorPosition();
             FurnitureView hovered = FindAt(cursor);
 
-            if (Input.GetMouseButtonDown(1) && hovered != null)
+            if ((nativeContextClick || Input.GetMouseButtonDown(1)) && hovered != null)
             {
                 contextId = hovered.data.id;
                 contextDesktop = cursor;
+                moveArmedId = null;
                 return true;
             }
 
@@ -157,11 +172,21 @@ namespace TokenPet
                 contextId = null;
                 if (hovered != null)
                 {
-                    draggingId = hovered.data.id;
-                    dragCursorStart = cursor;
-                    dragItemStart = new Vector2(hovered.data.x, hovered.data.y);
+                    if (string.Equals(moveArmedId, hovered.data.id,
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        draggingId = hovered.data.id;
+                        dragCursorStart = cursor;
+                        dragItemStart = new Vector2(hovered.data.x, hovered.data.y);
+                        moveArmedId = null;
+                    }
+                    else
+                    {
+                        RequestUse(hovered);
+                    }
                     return true;
                 }
+                moveArmedId = null;
             }
 
             if (!string.IsNullOrEmpty(draggingId) && views.TryGetValue(draggingId, out FurnitureView drag))
@@ -197,18 +222,32 @@ namespace TokenPet
             float delta = Time.unscaledDeltaTime;
             foreach (FurnitureView view in views.Values)
             {
-                if (Mathf.Abs(view.bounce) < 0.001f && Mathf.Abs(view.bounceVelocity) < 0.001f)
+                bool hasBounce = Mathf.Abs(view.bounce) >= 0.001f ||
+                    Mathf.Abs(view.bounceVelocity) >= 0.001f;
+                bool hasFeedback = view.feedbackTime > 0f;
+                if (!hasBounce && !hasFeedback)
                     continue;
-                view.bounceVelocity += (-18f * view.bounce - 6f * view.bounceVelocity) * delta;
-                view.bounce += view.bounceVelocity * delta;
-                float compression = Mathf.Clamp(view.bounce * 0.035f, -0.18f, 0.24f);
-                view.root.localScale = new Vector3(1f + compression * 0.35f, 1f - compression, 1f);
-                if (Mathf.Abs(view.bounce) < 0.01f && Mathf.Abs(view.bounceVelocity) < 0.01f)
+
+                if (hasBounce)
                 {
-                    view.bounce = 0f;
-                    view.bounceVelocity = 0f;
-                    view.root.localScale = Vector3.one;
+                    view.bounceVelocity += (-18f * view.bounce - 6f * view.bounceVelocity) * delta;
+                    view.bounce += view.bounceVelocity * delta;
+                    if (Mathf.Abs(view.bounce) < 0.01f && Mathf.Abs(view.bounceVelocity) < 0.01f)
+                    {
+                        view.bounce = 0f;
+                        view.bounceVelocity = 0f;
+                    }
                 }
+
+                view.feedbackTime = Mathf.Max(0f, view.feedbackTime - delta);
+                float compression = Mathf.Clamp(view.bounce * 0.035f, -0.18f, 0.24f);
+                float pulse = view.feedbackTime > 0f
+                    ? Mathf.Sin((0.7f - view.feedbackTime) * 18f) * 0.035f
+                    : 0f;
+                view.root.localScale = new Vector3(
+                    1f + compression * 0.35f + pulse,
+                    1f - compression + pulse,
+                    1f);
             }
         }
 
@@ -229,20 +268,73 @@ namespace TokenPet
             GUI.DrawTexture(new Rect(local.x + 2f, local.y + 2f,
                 local.width - 4f, local.height - 4f), Texture2D.whiteTexture);
             GUI.color = previous;
-            GUI.Label(new Rect(local.x + 10f, local.y + 5f, 132f, 22f),
-                "家具選項", contextStyle);
-            if (GUI.Button(new Rect(local.x + 8f, local.y + 29f, 144f, 28f),
-                "收回這件家具", buttonStyle))
+            string selectedId = contextId;
+            GUI.Label(new Rect(local.x + 10f, local.y + 5f, 158f, 22f),
+                FurnitureName(selectedId), contextStyle);
+            if (GUI.Button(new Rect(local.x + 8f, local.y + 29f, 160f, 28f),
+                FurnitureActionLabel(selectedId), buttonStyle))
+            {
+                if (views.TryGetValue(selectedId, out FurnitureView selected))
+                    RequestUse(selected);
+                contextId = null;
+            }
+            if (GUI.Button(new Rect(local.x + 8f, local.y + 61f, 160f, 28f),
+                "移動位置（再拖曳）", buttonStyle))
+            {
+                moveArmedId = selectedId;
+                contextId = null;
+            }
+            if (GUI.Button(new Rect(local.x + 8f, local.y + 93f, 160f, 28f),
+                "收回家具", buttonStyle))
             {
                 ipc?.Send(new RendererEvent
                 {
                     event_name = "furniture_despawn",
-                    item = contextId,
+                    item = selectedId,
                     action = "despawn"
                 });
                 contextId = null;
             }
         }
+
+        private void RequestUse(FurnitureView view)
+        {
+            if (view == null)
+                return;
+            view.feedbackTime = 0.7f;
+            ipc?.Send(new RendererEvent
+            {
+                event_name = "furniture_action",
+                item = view.data.id,
+                action = "use"
+            });
+        }
+
+        private static string FurnitureName(string id) => (id ?? "").ToLowerInvariant() switch
+        {
+            "futon" => "溫馨地舖",
+            "laptop" => "加班寫扣筆電",
+            "night_lamp" => "蘑菇小夜燈",
+            "succulent_pot" => "多肉小盆栽",
+            "lazy_sofa" => "柔軟懶人沙發",
+            "pixel_tv" => "復古像素電視",
+            "kotatsu" => "日式暖桌被爐",
+            "trampoline" => "彈簧蹦蹦床",
+            _ => "家具選項"
+        };
+
+        private static string FurnitureActionLabel(string id) => (id ?? "").ToLowerInvariant() switch
+        {
+            "futon" => "去睡一下",
+            "laptop" => "開始寫扣",
+            "night_lamp" => "去燈下放空",
+            "succulent_pot" => "幫多肉澆水",
+            "lazy_sofa" => "去沙發耍廢",
+            "pixel_tv" => "一起看電視",
+            "kotatsu" => "鑽進暖桌",
+            "trampoline" => "跳蹦蹦床",
+            _ => "使用家具"
+        };
 
         private FurnitureView FindAt(Vector2Int cursor)
         {
@@ -260,11 +352,11 @@ namespace TokenPet
         {
             float x = Mathf.Clamp(contextDesktop.x,
                 overlay.StageOrigin.x,
-                overlay.StageOrigin.x + overlay.StageSize.x - 160f);
+                overlay.StageOrigin.x + overlay.StageSize.x - 176f);
             float y = Mathf.Clamp(contextDesktop.y,
                 overlay.StageOrigin.y,
-                overlay.StageOrigin.y + overlay.StageSize.y - 64f);
-            return new Rect(x, y, 160f, 64f);
+                overlay.StageOrigin.y + overlay.StageSize.y - 129f);
+            return new Rect(x, y, 176f, 129f);
         }
 
         private FurnitureView CreateView(TokenPetFurnitureItem item)

@@ -24,8 +24,14 @@ namespace TokenPet
             public string id;
             public string slot;
             public string resource;
+            public string back_resource;
             public float offset_x;
             public float offset_y;
+            // Painted accessories use a full transparent canvas.  Keeping the
+            // mount pivot in data lets hats sit on the head rim, helmets wrap
+            // the face, and floating ornaments keep their own baseline.
+            public float pivot_x = 0.5f;
+            public float pivot_y = 0.5f;
             public float scale = 1f;
             public int sorting_order = 20;
         }
@@ -159,6 +165,23 @@ namespace TokenPet
             }
         }
 
+        public void SetBackFacing(bool backFacing)
+        {
+            foreach (GameObject current in equippedObjects.Values)
+            {
+                if (current == null)
+                    continue;
+                Transform front = current.transform.Find("FrontArtwork");
+                Transform back = current.transform.Find("BackArtwork");
+                if (front == null || back == null)
+                    continue;
+                if (front.gameObject.activeSelf == backFacing)
+                    front.gameObject.SetActive(!backFacing);
+                if (back.gameObject.activeSelf != backFacing)
+                    back.gameObject.SetActive(backFacing);
+            }
+        }
+
         private static GameObject CreateAccessory(AccessoryDefinition definition)
         {
             if (string.IsNullOrWhiteSpace(definition.resource))
@@ -169,28 +192,6 @@ namespace TokenPet
 
             if (definition.resource.StartsWith("sprite:", StringComparison.OrdinalIgnoreCase))
                 return CreatePaintedAccessory(definition);
-
-            if (definition.resource.StartsWith("sprite:", StringComparison.OrdinalIgnoreCase))
-            {
-                string resourcePath = definition.resource.Substring("sprite:".Length);
-                Texture2D texture = Resources.Load<Texture2D>(resourcePath);
-                if (texture == null)
-                {
-                    Debug.LogWarning($"Missing painted accessory Resources/{resourcePath}; " +
-                        "using procedural fallback.");
-                    return CreateProceduralAccessory(definition.id);
-                }
-
-                texture.filterMode = FilterMode.Bilinear;
-                texture.wrapMode = TextureWrapMode.Clamp;
-                Sprite sprite = Sprite.Create(texture,
-                    new Rect(0f, 0f, texture.width, texture.height),
-                    new Vector2(0.5f, 0.5f), 400f, 0u, SpriteMeshType.FullRect);
-                sprite.name = $"{definition.id}_painted";
-                GameObject painted = new($"Painted {definition.id}");
-                painted.AddComponent<SpriteRenderer>().sprite = sprite;
-                return painted;
-            }
 
             GameObject prefab = Resources.Load<GameObject>(definition.resource);
             if (prefab == null)
@@ -204,25 +205,58 @@ namespace TokenPet
         private static GameObject CreatePaintedAccessory(AccessoryDefinition definition)
         {
             string resourcePath = definition.resource.Substring("sprite:".Length);
-            Texture2D texture = Resources.Load<Texture2D>(resourcePath);
-            if (texture == null)
+            Sprite frontSprite = LoadPaintedSprite(resourcePath, definition,
+                $"{definition.id}_front");
+            if (frontSprite == null)
             {
                 Debug.LogWarning(
                     $"Missing painted accessory Resources/{resourcePath}; using procedural fallback.");
                 return CreateProceduralAccessory(definition.id);
             }
 
+            GameObject root = new($"Painted {definition.id}");
+            CreateArtwork(root.transform, "FrontArtwork", frontSprite, true);
+
+            if (!string.IsNullOrWhiteSpace(definition.back_resource) &&
+                definition.back_resource.StartsWith("sprite:", StringComparison.OrdinalIgnoreCase))
+            {
+                string backPath = definition.back_resource.Substring("sprite:".Length);
+                Sprite backSprite = LoadPaintedSprite(backPath, definition,
+                    $"{definition.id}_back");
+                if (backSprite != null)
+                    CreateArtwork(root.transform, "BackArtwork", backSprite, false);
+                else
+                    Debug.LogWarning($"Missing rear accessory Resources/{backPath}; using front view.");
+            }
+            return root;
+        }
+
+        private static Sprite LoadPaintedSprite(string resourcePath,
+            AccessoryDefinition definition, string spriteName)
+        {
+            Texture2D texture = Resources.Load<Texture2D>(resourcePath);
+            if (texture == null)
+                return null;
             texture.filterMode = FilterMode.Bilinear;
             texture.wrapMode = TextureWrapMode.Clamp;
             Sprite sprite = Sprite.Create(texture,
                 new Rect(0f, 0f, texture.width, texture.height),
-                new Vector2(0.5f, 0.5f), 400f, 0u, SpriteMeshType.FullRect);
-            sprite.name = $"{definition.id}_painted";
+                new Vector2(
+                    Mathf.Clamp01(definition.pivot_x),
+                    Mathf.Clamp01(definition.pivot_y)),
+                400f, 0u, SpriteMeshType.FullRect);
+            sprite.name = spriteName;
+            return sprite;
+        }
 
-            GameObject root = new($"Painted {definition.id}");
-            SpriteRenderer renderer = root.AddComponent<SpriteRenderer>();
+        private static void CreateArtwork(Transform parent, string name,
+            Sprite sprite, bool visible)
+        {
+            GameObject artwork = new(name);
+            artwork.transform.SetParent(parent, false);
+            SpriteRenderer renderer = artwork.AddComponent<SpriteRenderer>();
             renderer.sprite = sprite;
-            return root;
+            artwork.SetActive(visible);
         }
 
         private static GameObject CreatePocCrown()

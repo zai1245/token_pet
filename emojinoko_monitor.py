@@ -216,8 +216,9 @@ class EmojinokoMonitor:
         default_y = screen_h - 340
         
         self.config = load_config()
-        # Unity is opt-in. The legacy Canvas pet is created first and remains
-        # available for immediate fallback if the external player fails.
+        # Build the Canvas renderer as a warm fallback, but do not flash it on
+        # screen while the requested Unity renderer is booting.
+        self._unity_requested = unity_renderer_requested(self.config)
         self.unity_renderer = None
         self._unity_renderer_active = False
         self._unity_renderer_visible = True
@@ -337,6 +338,12 @@ class EmojinokoMonitor:
         self.pet.monitor = self
         self.shadow_win = ShadowWindow(self)
         self.hud_win = HudWindow(self)
+        if self._unity_requested:
+            try:
+                self.shadow_win.withdraw()
+                self.hud_win.withdraw()
+            except Exception:
+                pass
         self.pet.equipped_accessory = self.pet_data.get("equipped_accessory")
         equipment = self.pet_data.get("equipped_accessories")
         if not isinstance(equipment, dict):
@@ -435,9 +442,11 @@ class EmojinokoMonitor:
                 self.monthly_price_str,
                 self.pet.state
             )
-        # 全部視窗坐標與樣式準備就緒後，一次性安全顯示並置頂
-        self.root.deiconify()
-        self.root.lift()
+        # Unity 啟動期間保持 Canvas 隱藏；只有未要求 Unity 時才直接顯示。
+        # 若 Unity 啟動失敗，_fallback_to_legacy_renderer 會完整恢復這些視窗。
+        if not self._unity_requested:
+            self.root.deiconify()
+            self.root.lift()
 
     def _start_game_loops(self):
         """啟動所有遊戲相關時鐘迴圈"""
@@ -459,7 +468,7 @@ class EmojinokoMonitor:
             bridge.move_window(x, y)
 
     def _start_unity_renderer_if_requested(self):
-        if not unity_renderer_requested(self.config):
+        if not self._unity_requested:
             return
 
         bridge = UnityRendererBridge(
@@ -470,7 +479,7 @@ class EmojinokoMonitor:
         self._unity_renderer_started_at = time.monotonic()
         if not bridge.start():
             print(f"[Unity Renderer] Fallback to legacy: {bridge.executable}")
-            self.unity_renderer = None
+            self._fallback_to_legacy_renderer("start_failed", str(bridge.executable))
             return
 
         print(f"[Unity Renderer] Starting PoC: {bridge.executable}")
@@ -525,6 +534,8 @@ class EmojinokoMonitor:
                         "y": furniture.winfo_y(),
                     }
                     self.save_pet_savegame()
+            elif event_name == "furniture_action":
+                self._request_furniture_interaction(payload.get("item", ""))
             elif event_name == "furniture_despawn":
                 self.despawn_furniture(payload.get("item", ""))
             elif event_name == "drag_released":
@@ -593,6 +604,35 @@ class EmojinokoMonitor:
         self.pet.state = "idle"
         self.pet.eye_state = "normal"
         self.pet.mouth_state = "normal"
+
+    def _request_furniture_interaction(self, item_id):
+        """Start an explicit, cancellable approach to one Unity furniture item."""
+        if item_id not in getattr(self, "spawned_furniture_wins", {}):
+            return
+
+        # A second click while using furniture acts as a friendly cancel/retry
+        # instead of leaving the pet trapped in the old snapped pose.
+        if getattr(self, "current_furniture_snapped", None) is not None:
+            self.current_furniture_snapped = None
+            self._furniture_snap_timer = 0
+
+        self.target_furniture_id = item_id
+        self.pet.state = "approach_furniture"
+        self._approach_timer = 350
+        self.pet.eye_state = "happy"
+        self.pet.mouth_state = "normal"
+        approach_msg = {
+            "futon": "好睏，去睡一下 💤",
+            "laptop": "來寫一點扣！💻",
+            "lazy_sofa": "去沙發耍廢～ 🛋️",
+            "kotatsu": "鑽進暖桌取暖 🍵",
+            "pixel_tv": "一起看電視！📺",
+            "night_lamp": "去燈下放空 🏮",
+            "succulent_pot": "幫多肉澆水 🪴",
+            "trampoline": "來跳蹦蹦床！🤸",
+        }.get(item_id, "去玩家具囉！✨")
+        self.create_text_popup(approach_msg, 170, 120, color="#f9e2af")
+        self.root.after(800, self.pet.restore_eye)
 
     def _handle_unity_poke(self):
         """Apply the original Canvas click reaction and five-click fever combo."""
@@ -704,6 +744,7 @@ class EmojinokoMonitor:
         bridge = getattr(self, "unity_renderer", None)
         self.unity_renderer = None
         self._unity_renderer_active = False
+        self._unity_requested = False
         self._unity_renderer_visible = True
         if bridge is not None:
             bridge.stop()
@@ -949,8 +990,12 @@ class EmojinokoMonitor:
                 try:
                     mx = m_win.winfo_x()
                     my = m_win.winfo_y()
-                    current_x = self.root.winfo_x()
-                    current_y = self.root.winfo_y()
+                    if getattr(self, "_unity_renderer_active", False):
+                        current_x = float(self._physics_win_x)
+                        current_y = float(self._physics_win_y)
+                    else:
+                        current_x = self.root.winfo_x()
+                        current_y = self.root.winfo_y()
                     
                     # 計算目標螢幕坐標 (讓地瓜球完美將嘴巴/重心對準便利貼中心)
                     target_x = mx - 80
@@ -1060,9 +1105,13 @@ class EmojinokoMonitor:
                     else:
                         target_wx = fx - 90
                         target_wy = fy - 145
-                        
-                    current_x = self.root.winfo_x()
-                    current_y = self.root.winfo_y()
+
+                    if getattr(self, "_unity_renderer_active", False):
+                        current_x = float(self._physics_win_x)
+                        current_y = float(self._physics_win_y)
+                    else:
+                        current_x = self.root.winfo_x()
+                        current_y = self.root.winfo_y()
                     
                     dx = target_wx - current_x
                     dy = target_wy - current_y
@@ -1104,7 +1153,11 @@ class EmojinokoMonitor:
                                 self.air_roll_direction = random.choice([-1.0, 1.0])
                                 self.create_text_popup("蹦蹦跳！🤸", 170, 100, color="#fab387")
                             else:
-                                self.check_furniture_overlap()
+                                if self.check_furniture_overlap():
+                                    self.target_furniture_id = None
+                                    bridge = getattr(self, "unity_renderer", None)
+                                    if bridge is not None:
+                                        bridge.trigger_furniture(target_f_id, "use")
                 except Exception:
                     self.pet.state = "idle"
                     self.pet.roll_angle = 0.0
@@ -1594,7 +1647,7 @@ class EmojinokoMonitor:
         if self.pet.state in ("idle", "walk") and not getattr(self.pet, "fever_timer", 0) > 0 and self.pet_data.get("satiety", 100.0) > 15:
             if getattr(self, "current_furniture_snapped", None) is None and getattr(self, "_furniture_cooldown", 0) <= 0:
                 spawned = getattr(self, "spawned_furniture_wins", {})
-                if spawned and random.random() < 0.003: # 每秒約 18% 的發呆機會主動去玩
+                if spawned and random.random() < 0.00035: # 偶爾自主玩；平常由使用者點家具觸發
                     target_f_id = random.choice(list(spawned.keys()))
                     self.target_furniture_id = target_f_id
                     self.pet.state = "approach_furniture"
@@ -3554,7 +3607,7 @@ class EmojinokoMonitor:
         if item_id in self.spawned_furniture_wins:
             self.despawn_furniture(item_id)
             
-        if unity_renderer_requested(self.config):
+        if self._unity_requested and getattr(self, "unity_renderer", None) is not None:
             win = UnityFurnitureProxy(self, item_id)
         else:
             win = FurnitureWindow(self, item_id)
@@ -3676,8 +3729,12 @@ class EmojinokoMonitor:
             self.create_text_popup("已恢復便利貼 📝", 170, 100, color="#a6e3a1")
 
     def check_furniture_overlap(self):
-        cx = self.root.winfo_x() + 170
-        cy = self.root.winfo_y() + 205
+        if getattr(self, "_unity_renderer_active", False):
+            cx = float(self._physics_win_x) + 170
+            cy = float(self._physics_win_y) + 205
+        else:
+            cx = self.root.winfo_x() + 170
+            cy = self.root.winfo_y() + 205
         
         # 1. 溫馨地舖 (futon)
         if "futon" in self.spawned_furniture_wins:

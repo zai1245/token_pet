@@ -40,6 +40,39 @@ class UnityFullParityTests(unittest.TestCase):
         ).read_text(encoding="utf-8"))
         self.assertEqual({item["id"] for item in catalog["items"]}, expected)
 
+    def test_head_accessories_have_artwork_aware_mount_pivots(self):
+        catalog = json.loads((
+            ROOT / "unity_poc" / "Assets" / "TokenPet" / "Resources" /
+            "accessory_catalog.json"
+        ).read_text(encoding="utf-8"))
+        head_items = [item for item in catalog["items"] if item["slot"] == "head"]
+        self.assertTrue(head_items)
+        for item in head_items:
+            with self.subTest(item=item["id"]):
+                self.assertIn("pivot_x", item)
+                self.assertIn("pivot_y", item)
+                self.assertGreaterEqual(item["pivot_x"], 0.0)
+                self.assertLessEqual(item["pivot_x"], 1.0)
+                self.assertGreaterEqual(item["pivot_y"], 0.0)
+                self.assertLessEqual(item["pivot_y"], 1.0)
+
+        char_helmet = next(item for item in head_items if item["id"] == "char_helmet")
+        char_mask = next(
+            item for item in catalog["items"] if item["id"] == "char_mask"
+        )
+        self.assertEqual(
+            "sprite:AccessoriesV2/char_helmet_back",
+            char_helmet.get("back_resource"),
+        )
+        self.assertGreater(char_helmet["offset_y"], char_mask["offset_y"])
+        self.assertGreater(char_helmet["sorting_order"], char_mask["sorting_order"])
+        equipment = (SCRIPTS / "TokenPetEquipmentController.cs").read_text(
+            encoding="utf-8"
+        )
+        bootstrap = (SCRIPTS / "TokenPetPocBootstrap.cs").read_text(encoding="utf-8")
+        self.assertIn("SetBackFacing", equipment)
+        self.assertIn("equipment?.SetBackFacing(backFacing)", bootstrap)
+
     def test_every_consumable_visual_is_implemented(self):
         source = (SCRIPTS / "TokenPetLegacyVisuals.cs").read_text(encoding="utf-8")
         for item_id in {
@@ -68,6 +101,10 @@ class UnityFullParityTests(unittest.TestCase):
         self.assertIn("class TokenPetFurnitureStage", stage)
         self.assertIn('event_name = "furniture_moved"', stage)
         self.assertIn('event_name = "furniture_despawn"', stage)
+        self.assertIn('event_name = "furniture_action"', stage)
+        self.assertIn('event_name == "furniture_action"', monitor)
+        self.assertIn("_request_furniture_interaction", monitor)
+        self.assertIn("moveArmedId", stage)
         for item_id in {
             "futon", "laptop", "trampoline", "night_lamp",
             "succulent_pot", "lazy_sofa", "pixel_tv", "kotatsu",
@@ -98,6 +135,8 @@ class UnityFullParityTests(unittest.TestCase):
         source = (ROOT / "emojinoko_monitor.py").read_text(encoding="utf-8")
         self.assertIn("_fallback_to_legacy_renderer", source)
         self.assertIn("legacy pet hidden and standing by as fallback", source)
+        self.assertIn("if not self._unity_requested:", source)
+        self.assertIn('_fallback_to_legacy_renderer("start_failed"', source)
 
     def test_hidden_canvas_feedback_is_rendered_by_unity(self):
         monitor = (ROOT / "emojinoko_monitor.py").read_text(encoding="utf-8")

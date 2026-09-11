@@ -40,6 +40,13 @@ class UnityArtAssetTests(unittest.TestCase):
     def test_original_sprite_remains_available_as_fallback(self):
         self.assertTrue((RESOURCE_DIR / "tokenpet_stylized.png").is_file())
 
+    def test_char_helmet_rear_sprite_has_alpha(self):
+        path = RESOURCE_DIR / "AccessoriesV2" / "char_helmet_back.png"
+        width, height, bit_depth, color_type, _, _, _ = read_png_ihdr(path)
+        self.assertEqual((512, 512), (width, height))
+        self.assertEqual(8, bit_depth)
+        self.assertIn(color_type, {4, 6})
+
 
 if __name__ == "__main__":
     unittest.main()

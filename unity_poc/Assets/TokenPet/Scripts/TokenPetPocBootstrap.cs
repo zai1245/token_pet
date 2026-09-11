@@ -6,7 +6,7 @@ namespace TokenPet
 {
     public sealed class TokenPetPocBootstrap : MonoBehaviour
     {
-        public const string RendererVersion = "0.7.1-preview";
+        public const string RendererVersion = "0.8.0-preview";
 
         private enum MotionState
         {
@@ -199,7 +199,10 @@ namespace TokenPet
 
             headSocket = new GameObject("Socket_Head").transform;
             headSocket.SetParent(motionRoot, false);
-            headSocket.localPosition = new Vector3(0f, 1.35f, 0f);
+            // Head accessories now carry their own artwork-aware mount pivot.
+            // Keeping this socket at the character origin prevents every hat
+            // from inheriting the old one-size-fits-all floating offset.
+            headSocket.localPosition = Vector3.zero;
 
             equipment = rigRoot.gameObject.AddComponent<TokenPetEquipmentController>();
             equipment.RegisterSocket("head", headSocket);
@@ -263,13 +266,14 @@ namespace TokenPet
 
         private void HandlePointer()
         {
-            if (furnitureStage != null && furnitureStage.HandlePointer())
+            bool nativeContextClick = overlay.TryConsumeContextClick(out Vector2Int nativeCursor);
+            if (furnitureStage != null &&
+                furnitureStage.HandlePointer(nativeContextClick, nativeCursor))
                 return;
 
             Vector3 world = petCamera.ScreenToWorldPoint(Input.mousePosition);
             bool overPet = hitCollider != null && hitCollider.OverlapPoint(world);
 
-            bool nativeContextClick = overlay.TryConsumeContextClick(out Vector2Int nativeCursor);
             if ((nativeContextClick || Input.GetMouseButtonDown(1)) &&
                 (nativeContextClick || overPet) && Time.unscaledTime - lastContextMenuAt > 0.25f)
             {
@@ -527,6 +531,7 @@ namespace TokenPet
                 string.Equals(legacyState, "work_laptop", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(legacyState, "watch_tv", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(legacyState, "water_plant", StringComparison.OrdinalIgnoreCase);
+            equipment?.SetBackFacing(backFacing);
             float facingScale = backFacing ? -1f : (sideFacing ? 0.72f : 1f);
             Vector3 targetScale = new(
                 Mathf.Max(0.12f, Mathf.Abs(scale.x)) * facingScale,

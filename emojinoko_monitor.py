@@ -226,6 +226,8 @@ class EmojinokoMonitor:
         self._unity_status_visible = bool(self.config.get("unity_status_visible", True))
         self._unity_action_menu = None
         self._unity_desktop_metrics = None
+        self._unity_cursor_position = None
+        self._unity_cursor_updated_at = 0.0
         
         # 針對 LDAP 聯網版本 (非單機 Standalone 模式)，若無更新路徑則預設寫入公司內網分享路徑
         if not self.STANDALONE:
@@ -467,6 +469,31 @@ class EmojinokoMonitor:
         if getattr(self, "_unity_renderer_active", False) and bridge is not None:
             bridge.move_window(x, y)
 
+    def _get_pet_desktop_position(self):
+        """Return the authoritative desktop origin for the active renderer."""
+        if getattr(self, "_unity_renderer_active", False):
+            return float(self._physics_win_x), float(self._physics_win_y)
+        return float(self.root.winfo_x()), float(self.root.winfo_y())
+
+    def _get_pointer_desktop_position(self):
+        """Return a DPI-aware cursor position when the Unity stage is active."""
+        if getattr(self, "_unity_renderer_active", False):
+            position = getattr(self, "_unity_cursor_position", None)
+            age = time.monotonic() - getattr(self, "_unity_cursor_updated_at", 0.0)
+            if position is not None and age <= 0.30:
+                return position
+            if IS_WINDOWS:
+                try:
+                    class POINT(ctypes.Structure):
+                        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+                    point = POINT()
+                    if ctypes.windll.user32.GetCursorPos(ctypes.byref(point)):
+                        return int(point.x), int(point.y)
+                except Exception:
+                    pass
+        return self.root.winfo_pointerxy()
+
     def _start_unity_renderer_if_requested(self):
         if not self._unity_requested:
             return
@@ -498,6 +525,12 @@ class EmojinokoMonitor:
                 self._activate_unity_renderer()
             elif event_name == "desktop_metrics":
                 pass
+            elif event_name == "cursor_position":
+                self._unity_cursor_position = (
+                    int(payload.get("x", 0)),
+                    int(payload.get("y", 0)),
+                )
+                self._unity_cursor_updated_at = time.monotonic()
             elif event_name == "poke":
                 self._handle_unity_poke()
             elif event_name == "double_click":
@@ -968,8 +1001,7 @@ class EmojinokoMonitor:
 
         # 處理氣球向上飄浮物理與視窗左右隨風微幅晃動
         if self.pet.state == "balloon":
-            current_x = self.root.winfo_x()
-            current_y = self.root.winfo_y()
+            current_x, current_y = self._get_pet_desktop_position()
             target_y = 120
             if current_y > target_y:
                 new_y = current_y - 1.5
@@ -1522,9 +1554,8 @@ class EmojinokoMonitor:
                 landing_y = m_info["work_y"] + m_info["work_h"] - 300
                 
                 # 獲取滑鼠與視窗的座標
-                mx, my = self.root.winfo_pointerxy()
-                wx = self.root.winfo_x()
-                wy = self.root.winfo_y()
+                mx, my = self._get_pointer_desktop_position()
+                wx, wy = self._get_pet_desktop_position()
                 
                 # 地瓜球的螢幕中心點 X/Y
                 screen_pet_x = wx + self.pet.cx
@@ -1602,7 +1633,7 @@ class EmojinokoMonitor:
         # 處理返回原位狀態
         elif self.pet.state == "return_home":
             if getattr(self, "_chase_origin_x", None) is not None:
-                current_x = self.root.winfo_x()
+                current_x, _current_y = self._get_pet_desktop_position()
                 if abs(current_x - self._chase_origin_x) <= 6:
                     # 到家了！
                     m_info = self.get_current_monitor_info()
@@ -1630,11 +1661,16 @@ class EmojinokoMonitor:
             else:
                 self.pet.state = "idle"
 
-        # 隨機觸發追滑鼠行為 (在 idle/walk 狀態下，有小機率觸發，飽食度大於 10%)
+        # 偶爾追滑鼠；使用時間排程避免 60 FPS 每幀抽籤造成過度頻繁。
         if self.pet.state in ("idle", "walk") and not getattr(self.pet, "fever_timer", 0) > 0 and self.pet_data.get("satiety", 100.0) > 10:
-            if random.random() < 0.00025:  # 每秒約 1.5% 的機率
-                mx = self.root.winfo_pointerx()
-                wx = self.root.winfo_x()
+            now = time.monotonic()
+            next_chase_at = getattr(self, "_next_chase_at", None)
+            if next_chase_at is None:
+                self._next_chase_at = now + random.uniform(180.0, 420.0)
+            elif now >= next_chase_at:
+                self._next_chase_at = now + random.uniform(180.0, 420.0)
+                mx, _my = self._get_pointer_desktop_position()
+                wx, _wy = self._get_pet_desktop_position()
                 if abs(mx - (wx + 170)) > 120:
                     self._chase_origin_x = wx  # 記錄出發位置！
                     self.pet.state = "chase_mouse"
@@ -2361,9 +2397,10 @@ class EmojinokoMonitor:
             self.pet.is_reaching = False  # 預設不伸手
             
             # 獲取滑鼠絕對座標與視窗中心相對位置
-            mx, my = self.root.winfo_pointerxy()
-            px = self.root.winfo_x() + 170  # 地瓜球中心 X
-            py = self.root.winfo_y() + 205  # 地瓜球中心 Y
+            mx, my = self._get_pointer_desktop_position()
+            pet_x, pet_y = self._get_pet_desktop_position()
+            px = pet_x + 170  # 地瓜球中心 X
+            py = pet_y + 205  # 地瓜球中心 Y
             mouse_dist = math.hypot(mx - px, my - py)
             
             if mouse_dist < 150 and self.pet.state in ("idle", "walk") and not getattr(self, "_whistling", False):

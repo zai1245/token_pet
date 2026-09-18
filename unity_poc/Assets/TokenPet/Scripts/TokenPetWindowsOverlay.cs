@@ -213,6 +213,32 @@ namespace TokenPet
                 }
             }
 #endif
+
+            // SetWindowPos changes the native HWND, but Unity can keep rendering
+            // into the original 340x300 backbuffer (especially at 150% Windows
+            // scaling) and let DWM stretch it across the desktop. That changes
+            // facial sampling and can distort the whole character. Resize the
+            // Unity backbuffer explicitly, then restore the borderless stage
+            // position after the deferred resolution change has completed.
+            if (IsDesktopStage &&
+                (Screen.width != StageSize.x || Screen.height != StageSize.y))
+            {
+                Screen.SetResolution(StageSize.x, StageSize.y, FullScreenMode.Windowed);
+                for (int frame = 0; frame < 12 &&
+                     (Screen.width != StageSize.x || Screen.height != StageSize.y); frame++)
+                    yield return null;
+#if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+                if (windowHandle != IntPtr.Zero)
+                {
+                    SetWindowPos(windowHandle, HwndTopmost,
+                        StageOrigin.x, StageOrigin.y, StageSize.x, StageSize.y,
+                        SwpFrameChanged);
+                }
+#endif
+            }
+            UnityEngine.Debug.Log(
+                $"TokenPet desktop stage: render={Screen.width}x{Screen.height}, " +
+                $"native={StageSize.x}x{StageSize.y}, origin={StageOrigin.x},{StageOrigin.y}");
             IsReady = true;
         }
 

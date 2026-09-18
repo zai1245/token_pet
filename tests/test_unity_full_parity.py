@@ -172,6 +172,8 @@ class UnityFullParityTests(unittest.TestCase):
         self.assertIn('event_name = "desktop_metrics"', bootstrap)
         self.assertIn("floor_y", bootstrap)
         self.assertIn("if (overlay != null && overlay.IsDesktopStage)", bootstrap)
+        self.assertIn("Screen.SetResolution(StageSize.x, StageSize.y", overlay)
+        self.assertIn("TokenPet desktop stage: render=", overlay)
 
     def test_unity_turning_and_furniture_poses_keep_canvas_character(self):
         bootstrap = (SCRIPTS / "TokenPetPocBootstrap.cs").read_text(encoding="utf-8")
@@ -222,6 +224,33 @@ class UnityFullParityTests(unittest.TestCase):
         self.assertIn("overlay.MoveTo", bootstrap)
         self.assertIn("current_x = float(self._physics_win_x)", monitor)
         self.assertIn("current_y = float(self._physics_win_y)", monitor)
+
+    def test_unity_chase_and_face_gaze_use_dpi_aware_desktop_coordinates(self):
+        monitor = (ROOT / "emojinoko_monitor.py").read_text(encoding="utf-8")
+        bootstrap = (SCRIPTS / "TokenPetPocBootstrap.cs").read_text(encoding="utf-8")
+        ipc = (SCRIPTS / "TokenPetIpcClient.cs").read_text(encoding="utf-8")
+        self.assertIn("def _get_pet_desktop_position", monitor)
+        self.assertIn("def _get_pointer_desktop_position", monitor)
+        self.assertIn('event_name == "cursor_position"', monitor)
+        self.assertIn('event_name = "cursor_position"', bootstrap)
+        self.assertIn("PublishCursorPosition();", bootstrap)
+        self.assertIn("public int screen_width", ipc)
+        self.assertIn("public float dpi", ipc)
+        self.assertNotIn("random.random() < 0.00025", monitor)
+
+    def test_face_textures_do_not_change_mip_level_across_windows_dpi(self):
+        resources = ROOT / "unity_poc" / "Assets" / "TokenPet" / "Resources"
+        metas = list((resources / "FaceExpressions").glob("*.png.meta"))
+        metas.extend([
+            resources / "tokenpet_body_round_clean_faceless.png.meta",
+            resources / "tokenpet_body_round_faceless.png.meta",
+        ])
+        self.assertGreaterEqual(len(metas), 13)
+        for meta in metas:
+            with self.subTest(texture=meta.name):
+                source = meta.read_text(encoding="utf-8")
+                self.assertIn("enableMipMap: 0", source)
+                self.assertNotIn("textureCompression: 1", source)
 
     def test_shop_is_integrated_into_the_unity_surface(self):
         monitor = (ROOT / "emojinoko_monitor.py").read_text(encoding="utf-8")

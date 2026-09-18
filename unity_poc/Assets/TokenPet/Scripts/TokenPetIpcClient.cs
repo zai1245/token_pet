@@ -61,6 +61,10 @@ namespace TokenPet
         public int stage_y;
         public int stage_width;
         public int stage_height;
+        public int screen_width;
+        public int screen_height;
+        public float dpi;
+        public string face_mode;
         public float velocity_x;
         public float velocity_y;
         public string message;

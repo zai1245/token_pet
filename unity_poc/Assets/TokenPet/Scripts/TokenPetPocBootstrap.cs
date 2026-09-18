@@ -6,7 +6,7 @@ namespace TokenPet
 {
     public sealed class TokenPetPocBootstrap : MonoBehaviour
     {
-        public const string RendererVersion = "0.8.2-preview";
+        public const string RendererVersion = "0.8.3-preview";
 
         private enum MotionState
         {
@@ -81,6 +81,7 @@ namespace TokenPet
         private string legacyEffects = "";
         private float legacySatiety = 100f;
         private RectInt lastPublishedWorkArea;
+        private float nextCursorPublishAt;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void CreateRuntime()
@@ -232,8 +233,19 @@ namespace TokenPet
             {
                 event_name = "ready",
                 state = "idle",
-                version = $"unity-poc-{RendererVersion}"
+                version = $"unity-poc-{RendererVersion}",
+                screen_width = Screen.width,
+                screen_height = Screen.height,
+                stage_width = overlay.StageSize.x,
+                stage_height = overlay.StageSize.y,
+                dpi = Screen.dpi,
+                face_mode = expressionRig != null && expressionRig.UsingCanvasFaceSprites
+                    ? "canvas_sprites"
+                    : "procedural_fallback"
             });
+            Debug.Log($"TokenPet render metrics: screen={Screen.width}x{Screen.height}, " +
+                $"stage={overlay.StageSize.x}x{overlay.StageSize.y}, dpi={Screen.dpi:0.##}, " +
+                $"face={(expressionRig != null && expressionRig.UsingCanvasFaceSprites ? "canvas_sprites" : "procedural_fallback")}");
         }
 
         private void Update()
@@ -242,6 +254,7 @@ namespace TokenPet
                 return;
 
             RefreshDesktopStageLayout();
+            PublishCursorPosition();
 
             if (Input.GetKeyDown(KeyCode.Escape))
             {
@@ -366,6 +379,22 @@ namespace TokenPet
                     }
                 }
             }
+        }
+
+        private void PublishCursorPosition()
+        {
+            if (ipc == null || !ipc.IsConnected || overlay == null || !overlay.IsDesktopStage ||
+                Time.unscaledTime < nextCursorPublishAt)
+                return;
+
+            nextCursorPublishAt = Time.unscaledTime + 0.05f;
+            Vector2Int cursor = overlay.GetCursorPosition();
+            ipc.Send(new RendererEvent
+            {
+                event_name = "cursor_position",
+                x = cursor.x,
+                y = cursor.y
+            });
         }
 
         private void TrackShake(int horizontalDelta)

@@ -53,6 +53,7 @@ namespace TokenPet
         private float legacyStateStartedAt;
 
         public bool FaceVisible { get; private set; } = true;
+        public bool UsingCanvasFaceSprites => usingCanvasFaceSprites;
 
         public void Initialize()
         {

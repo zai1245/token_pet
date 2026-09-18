@@ -36,6 +36,7 @@ namespace TokenPet
         private string builtFurniture = "";
         private bool showBoard;
         private bool overtime;
+        private bool externalFurnitureStage;
 
         public void Initialize(Transform visualParent, SpriteRenderer characterBody)
         {
@@ -68,6 +69,11 @@ namespace TokenPet
                     : command.board_text;
         }
 
+        public void SetExternalFurnitureStage(bool active)
+        {
+            externalFurnitureStage = active;
+        }
+
         public void Tick(float time)
         {
             EnsureFood();
@@ -78,7 +84,12 @@ namespace TokenPet
             foodRoot.gameObject.SetActive(eating);
             coffeeRoot.gameObject.SetActive(drinking);
             balloonRoot.gameObject.SetActive(ballooning);
-            furnitureRoot.gameObject.SetActive(NeedsFurniture());
+            // Real desktop furniture is rendered by TokenPetFurnitureStage.
+            // Keep only memo props attached to the pet; drawing another full
+            // bed/sofa/laptop here caused the old duplicate-furniture effect.
+            bool memoFurniture = ResolveFurniture() == "memo";
+            furnitureRoot.gameObject.SetActive(
+                NeedsFurniture() && (!externalFurnitureStage || memoFurniture));
             boardRoot.gameObject.SetActive(showBoard);
             float rabbitPhase = Mathf.Repeat(time, 5.5f);
             bool rabbitVisible = accessory == "gentleman_hat" && rabbitPhase > 4.25f;

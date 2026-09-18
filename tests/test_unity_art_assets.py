@@ -47,6 +47,27 @@ class UnityArtAssetTests(unittest.TestCase):
         self.assertEqual(8, bit_depth)
         self.assertIn(color_type, {4, 6})
 
+    def test_char_helmet_mask_pair_sprite_has_alpha(self):
+        path = RESOURCE_DIR / "AccessoriesV2" / "char_helmet_with_mask.png"
+        width, height, bit_depth, color_type, _, _, _ = read_png_ihdr(path)
+        self.assertEqual((512, 512), (width, height))
+        self.assertEqual(8, bit_depth)
+        self.assertIn(color_type, {4, 6})
+
+    def test_canvas_face_expression_layers_are_complete_and_transparent(self):
+        face_dir = RESOURCE_DIR / "FaceExpressions"
+        for name in {
+            "normal", "blink", "happy", "open", "happy_open", "dizzy",
+            "star", "sleep", "hungry", "worried", "surprised",
+        }:
+            with self.subTest(name=name):
+                width, height, bit_depth, color_type, _, _, _ = read_png_ihdr(
+                    face_dir / f"{name}.png"
+                )
+                self.assertEqual((256, 256), (width, height))
+                self.assertEqual(8, bit_depth)
+                self.assertIn(color_type, {4, 6})
+
 
 if __name__ == "__main__":
     unittest.main()

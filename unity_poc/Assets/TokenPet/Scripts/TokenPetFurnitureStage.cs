@@ -30,9 +30,13 @@ namespace TokenPet
         {
             public TokenPetFurnitureItem data;
             public Transform root;
+            public Transform visual;
+            public SpriteRenderer mainRenderer;
             public float bounce;
             public float bounceVelocity;
             public float feedbackTime;
+            public float interactionTime;
+            public bool interacting;
         }
 
         private const float WorldUnitsPerPixel = 2.20f / 104f;
@@ -133,6 +137,22 @@ namespace TokenPet
             }
         }
 
+        public void ApplyPetState(string state)
+        {
+            string activeId = FurnitureForState(state);
+            foreach (FurnitureView view in views.Values)
+            {
+                bool shouldInteract = string.Equals(view.data.id, activeId,
+                    StringComparison.OrdinalIgnoreCase);
+                if (shouldInteract && !view.interacting)
+                {
+                    view.interactionTime = 0f;
+                    view.feedbackTime = 0.7f;
+                }
+                view.interacting = shouldInteract;
+            }
+        }
+
         public void RefreshLayout()
         {
             foreach (FurnitureView view in views.Values)
@@ -224,10 +244,6 @@ namespace TokenPet
             {
                 bool hasBounce = Mathf.Abs(view.bounce) >= 0.001f ||
                     Mathf.Abs(view.bounceVelocity) >= 0.001f;
-                bool hasFeedback = view.feedbackTime > 0f;
-                if (!hasBounce && !hasFeedback)
-                    continue;
-
                 if (hasBounce)
                 {
                     view.bounceVelocity += (-18f * view.bounce - 6f * view.bounceVelocity) * delta;
@@ -240,16 +256,92 @@ namespace TokenPet
                 }
 
                 view.feedbackTime = Mathf.Max(0f, view.feedbackTime - delta);
+                if (view.interacting)
+                    view.interactionTime += delta;
                 float compression = Mathf.Clamp(view.bounce * 0.035f, -0.18f, 0.24f);
                 float pulse = view.feedbackTime > 0f
                     ? Mathf.Sin((0.7f - view.feedbackTime) * 18f) * 0.035f
                     : 0f;
-                view.root.localScale = new Vector3(
-                    1f + compression * 0.35f + pulse,
-                    1f - compression + pulse,
+                Vector3 interactionScale = Vector3.one;
+                Vector3 interactionOffset = Vector3.zero;
+                float interactionRotation = 0f;
+                Color tint = Color.white;
+                if (view.interacting)
+                    ApplyFurnitureMotion(view, ref interactionScale,
+                        ref interactionOffset, ref interactionRotation, ref tint);
+
+                view.visual.localPosition = interactionOffset;
+                view.visual.localRotation = Quaternion.Euler(0f, 0f, interactionRotation);
+                view.visual.localScale = new Vector3(
+                    interactionScale.x * (1f + compression * 0.35f + pulse),
+                    interactionScale.y * (1f - compression + pulse),
                     1f);
+                if (view.mainRenderer != null)
+                    view.mainRenderer.color = tint;
             }
         }
+
+        private static void ApplyFurnitureMotion(FurnitureView view,
+            ref Vector3 scale, ref Vector3 offset, ref float rotation, ref Color tint)
+        {
+            float time = view.interactionTime;
+            switch ((view.data.id ?? "").ToLowerInvariant())
+            {
+                case "futon":
+                    float breath = (Mathf.Sin(time * 2.1f) + 1f) * 0.5f;
+                    scale = new Vector3(1f + breath * 0.018f, 1f - breath * 0.035f, 1f);
+                    offset.y = -breath * 0.018f;
+                    break;
+                case "laptop":
+                    offset.y = Mathf.Abs(Mathf.Sin(time * 13f)) * 0.018f;
+                    rotation = Mathf.Sin(time * 17f) * 0.45f;
+                    tint = Color.Lerp(Color.white, new Color32(205, 235, 255, 255),
+                        (Mathf.Sin(time * 5f) + 1f) * 0.10f);
+                    break;
+                case "lazy_sofa":
+                    float settle = (Mathf.Sin(time * 1.7f) + 1f) * 0.5f;
+                    scale = new Vector3(1f + settle * 0.035f, 0.94f - settle * 0.025f, 1f);
+                    offset.y = -0.025f;
+                    break;
+                case "kotatsu":
+                    float warmth = (Mathf.Sin(time * 2.4f) + 1f) * 0.5f;
+                    scale = Vector3.one * (1f + warmth * 0.018f);
+                    tint = Color.Lerp(Color.white, new Color32(255, 224, 190, 255),
+                        0.08f + warmth * 0.10f);
+                    break;
+                case "pixel_tv":
+                    float channel = Mathf.Repeat(time, 2.4f) < 0.08f ? 0.28f : 0.08f;
+                    tint = Color.Lerp(Color.white, new Color32(170, 220, 255, 255), channel);
+                    offset.x = Mathf.Sin(time * 23f) * 0.006f;
+                    break;
+                case "night_lamp":
+                    float glow = (Mathf.Sin(time * 2.2f) + 1f) * 0.5f;
+                    scale = Vector3.one * (1f + glow * 0.045f);
+                    tint = Color.Lerp(Color.white, new Color32(255, 227, 145, 255),
+                        0.14f + glow * 0.18f);
+                    break;
+                case "succulent_pot":
+                    rotation = Mathf.Sin(time * 3.2f) * 2.8f;
+                    scale.y = 1f + Mathf.Sin(time * 5.4f) * 0.018f;
+                    tint = Color.Lerp(Color.white, new Color32(205, 255, 218, 255), 0.12f);
+                    break;
+                case "trampoline":
+                    scale.y = 0.94f + Mathf.Abs(Mathf.Sin(time * 7f)) * 0.08f;
+                    break;
+            }
+        }
+
+        private static string FurnitureForState(string state) => (state ?? "").ToLowerInvariant() switch
+        {
+            "sleep_futon" => "futon",
+            "work_laptop" => "laptop",
+            "relax_sofa" => "lazy_sofa",
+            "warm_kotatsu" => "kotatsu",
+            "watch_tv" => "pixel_tv",
+            "meditate_lamp" => "night_lamp",
+            "water_plant" => "succulent_pot",
+            _ => ""
+        };
 
         private void OnGUI()
         {
@@ -362,6 +454,8 @@ namespace TokenPet
         private FurnitureView CreateView(TokenPetFurnitureItem item)
         {
             GameObject rootObject = new($"Furniture_{item.id}");
+            GameObject visualObject = new("Visual");
+            visualObject.transform.SetParent(rootObject.transform, false);
             FurnitureView view = new()
             {
                 data = new TokenPetFurnitureItem
@@ -372,9 +466,11 @@ namespace TokenPet
                     width = Mathf.Max(40f, item.width),
                     height = Mathf.Max(30f, item.height)
                 },
-                root = rootObject.transform
+                root = rootObject.transform,
+                visual = visualObject.transform
             };
-            BuildArt(view.root, item.id, view.data.width, view.data.height);
+            BuildArt(view.visual, item.id, view.data.width, view.data.height);
+            view.mainRenderer = view.visual.GetComponentInChildren<SpriteRenderer>(true);
             PositionView(view);
             return view;
         }

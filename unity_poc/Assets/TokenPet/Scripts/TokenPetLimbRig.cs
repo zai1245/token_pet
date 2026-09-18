@@ -16,7 +16,10 @@ namespace TokenPet
         private LineRenderer rightArm;
         private LineRenderer leftLeg;
         private LineRenderer rightLeg;
+        private LineRenderer tail;
         private Material limbMaterial;
+        private string previousLegacyState = "";
+        private float legacyStateStartedAt;
 
         public void Initialize()
         {
@@ -38,6 +41,8 @@ namespace TokenPet
             rightArm = CreateLimb("Arm_Right", 0.125f);
             leftLeg = CreateLimb("Leg_Left", 0.140f);
             rightLeg = CreateLimb("Leg_Right", 0.140f);
+            tail = CreateLimb("Tail_Back", 0.120f);
+            tail.gameObject.SetActive(false);
             ApplyPose("idle", 0f, Vector2.zero, Vector2.zero);
         }
 
@@ -125,12 +130,27 @@ namespace TokenPet
             {
                 case "sleep":
                 case "sleep_futon":
-                case "relax_sofa":
-                case "warm_kotatsu":
                     armLeft = 200f;
                     armRight = -20f;
                     legLeft = -165f;
                     legRight = -15f;
+                    break;
+                case "relax_sofa":
+                    armLeft = 190f;
+                    armRight = -10f;
+                    armLeftBend = -16f;
+                    armRightBend = 16f;
+                    legLeft = -158f;
+                    legRight = -22f;
+                    break;
+                case "warm_kotatsu":
+                    float cozy = Mathf.Sin(time * 2.5f) * 3f;
+                    armLeft = 28f + cozy;
+                    armRight = 152f - cozy;
+                    armLeftBend = -12f;
+                    armRightBend = 12f;
+                    legLeft = -112f;
+                    legRight = -68f;
                     break;
                 case "eat":
                 case "drink":
@@ -151,6 +171,22 @@ namespace TokenPet
                     armRight = 38f;
                     armLeftBend = -24f;
                     armRightBend = 20f;
+                    break;
+                case "watch_tv":
+                    float cheer = Mathf.Sin(time * 7f) * 6f;
+                    armLeft = 148f + cheer;
+                    armRight = 32f - cheer;
+                    armLeftBend = -10f;
+                    armRightBend = 10f;
+                    break;
+                case "meditate_lamp":
+                    float calm = Mathf.Sin(time * 2f) * 2f;
+                    armLeft = 24f + calm;
+                    armRight = 156f - calm;
+                    armLeftBend = -16f;
+                    armRightBend = 16f;
+                    legLeft = -148f;
+                    legRight = -32f;
                     break;
                 case "balloon":
                     armRight = 62f;
@@ -182,6 +218,40 @@ namespace TokenPet
             // visible and the feet can never look detached after scaling.
             SetLimb(leftLeg, new Vector2(-0.36f, LegRootY), legLeft, legLeftBend, 0.12f, 0.11f);
             SetLimb(rightLeg, new Vector2(0.36f, LegRootY), legRight, legRightBend, 0.12f, 0.11f);
+            ApplyBackTail(legacyState);
+        }
+
+        private void ApplyBackTail(string legacyState)
+        {
+            if (tail == null)
+                return;
+
+            string normalized = (legacyState ?? "idle").ToLowerInvariant();
+            if (normalized != previousLegacyState)
+            {
+                previousLegacyState = normalized;
+                legacyStateStartedAt = Time.unscaledTime;
+            }
+
+            const float transitionDuration = 0.25f;
+            float progress = Mathf.Clamp01(
+                (Time.unscaledTime - legacyStateStartedAt) / transitionDuration);
+            float backAmount = normalized == "back_idle" ? 1f :
+                normalized == "turn_to_back" ? Mathf.InverseLerp(0.5f, 1f, progress) :
+                normalized == "turn_to_front" ? 1f - Mathf.InverseLerp(0f, 0.5f, progress) : 0f;
+
+            bool visible = backAmount > 0.03f;
+            tail.gameObject.SetActive(visible);
+            if (!visible)
+                return;
+
+            float wag = Mathf.Sin(Time.unscaledTime * 7.5f) * 0.055f * backAmount;
+            tail.SetPosition(0, new Vector3(-0.48f, -0.30f, 0f));
+            tail.SetPosition(1, new Vector3(-0.69f + wag, -0.43f, 0f));
+            tail.SetPosition(2, new Vector3(-0.60f + wag * 1.35f, -0.58f, 0f));
+            Color faded = new Color(LimbColor.r, LimbColor.g, LimbColor.b, backAmount);
+            tail.startColor = faded;
+            tail.endColor = faded;
         }
 
         private LineRenderer CreateLimb(string limbName, float width)

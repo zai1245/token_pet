@@ -1,7 +1,7 @@
 {
   "items": [
     { "id": "char_mask", "slot": "face", "resource": "sprite:AccessoriesV2/char_mask", "offset_x": 0.0, "offset_y": 0.26, "scale": 1.02, "sorting_order": 24 },
-    { "id": "char_helmet", "slot": "head", "resource": "sprite:AccessoriesV2/char_helmet", "back_resource": "sprite:AccessoriesV2/char_helmet_back", "offset_x": 0.0, "offset_y": 0.62, "pivot_x": 0.5, "pivot_y": 0.5, "scale": 1.78, "sorting_order": 26 },
+    { "id": "char_helmet", "slot": "head", "resource": "sprite:AccessoriesV2/char_helmet", "back_resource": "sprite:AccessoriesV2/char_helmet_back", "paired_face_id": "char_mask", "paired_resource": "sprite:AccessoriesV2/char_helmet_with_mask", "offset_x": 0.0, "offset_y": 0.62, "pivot_x": 0.5, "pivot_y": 0.5, "scale": 1.78, "sorting_order": 26 },
     { "id": "sunglasses", "slot": "face", "resource": "sprite:AccessoriesV2/sunglasses", "offset_x": 0.0, "offset_y": 0.15, "scale": 0.88, "sorting_order": 24 },
     { "id": "scholar_cap", "slot": "head", "resource": "sprite:AccessoriesV2/scholar_cap", "offset_x": 0.0, "offset_y": 0.83, "pivot_x": 0.5, "pivot_y": 0.18, "scale": 1.48, "sorting_order": 24 },
     { "id": "cat_ears", "slot": "head", "resource": "sprite:AccessoriesV2/cat_ears", "offset_x": 0.0, "offset_y": 0.80, "pivot_x": 0.5, "pivot_y": 0.34, "scale": 1.40, "sorting_order": 24 },

@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace TokenPet
@@ -8,11 +9,23 @@ namespace TokenPet
     /// </summary>
     public sealed class TokenPetExpressionRig : MonoBehaviour
     {
-        private static readonly Color FaceColor = new Color32(65, 27, 15, 255);
+        private static readonly Color FaceColor = new Color32(60, 34, 3, 255);
         private static readonly Color TongueColor = new Color32(255, 116, 105, 255);
-        private static readonly Color BlushColor = new Color32(255, 111, 92, 205);
+        private static readonly Color BlushColor = new Color32(244, 168, 184, 220);
+        // Canvas Emojinoko used a 52 px radius inside a 2.2 world-unit body.
+        // These anchors are the direct world-space conversion of that face.
+        private const float EyeCenterX = 0.308f;
+        private const float EyeCenterY = 0.088f;
+        private const float BrowCenterX = 0.352f;
+        private const float BrowCenterY = 0.308f;
+        private const float BlushCenterX = 0.484f;
+        private const float BlushCenterY = -0.044f;
+        private const float MouthCenterY = -0.176f;
 
         private Transform faceRoot;
+        private readonly Dictionary<string, Sprite> canvasFaceSprites = new();
+        private SpriteRenderer canvasFaceRenderer;
+        private bool usingCanvasFaceSprites;
         private Transform leftEyeRoot;
         private Transform rightEyeRoot;
         private LineRenderer leftEye;
@@ -60,21 +73,29 @@ namespace TokenPet
             faceRoot.SetParent(transform, false);
             faceRoot.localPosition = new Vector3(0f, 0f, -0.05f);
 
+            usingCanvasFaceSprites = InitializeCanvasFaceSprites();
+            if (usingCanvasFaceSprites)
+            {
+                ScheduleBlink();
+                ApplyExpression("idle", 0f, Vector2.zero);
+                return;
+            }
+
             leftEyeRoot = CreateEye("Eye_Left", out leftEye, out leftHighlight);
             rightEyeRoot = CreateEye("Eye_Right", out rightEye, out rightHighlight);
-            leftBrow = CreateLine("Brow_Left", 0.050f, 24);
-            rightBrow = CreateLine("Brow_Right", 0.050f, 24);
+            leftBrow = CreateLine("Brow_Left", 0.080f, 24);
+            rightBrow = CreateLine("Brow_Right", 0.080f, 24);
             leftBlush = CreateLine("Blush_Left", 0.18f, 22, null, BlushColor);
             rightBlush = CreateLine("Blush_Right", 0.18f, 22, null, BlushColor);
-            SetBlush(leftBlush, -0.52f);
-            SetBlush(rightBlush, 0.52f);
-            philtrum = CreateLine("Philtrum", 0.060f, 25);
-            mouthLine = CreateLine("Mouth_Line", 0.060f, 25);
+            SetBlush(leftBlush, -BlushCenterX);
+            SetBlush(rightBlush, BlushCenterX);
+            philtrum = CreateLine("Philtrum", 0.080f, 25);
+            mouthLine = CreateLine("Mouth_Line", 0.080f, 25);
 
-            leftCrossA = CreateLine("Eye_Left_X_A", 0.060f, 25);
-            leftCrossB = CreateLine("Eye_Left_X_B", 0.060f, 25);
-            rightCrossA = CreateLine("Eye_Right_X_A", 0.060f, 25);
-            rightCrossB = CreateLine("Eye_Right_X_B", 0.060f, 25);
+            leftCrossA = CreateLine("Eye_Left_X_A", 0.074f, 25);
+            leftCrossB = CreateLine("Eye_Left_X_B", 0.074f, 25);
+            rightCrossA = CreateLine("Eye_Right_X_A", 0.074f, 25);
+            rightCrossB = CreateLine("Eye_Right_X_B", 0.074f, 25);
             leftStar = CreateLine("Eye_Left_Star", 0.052f, 25);
             rightStar = CreateLine("Eye_Right_Star", 0.052f, 25);
 
@@ -109,14 +130,18 @@ namespace TokenPet
             if (sourceState == "turn_to_back")
             {
                 float progress = Mathf.Clamp01(sourceStateTime / 0.25f);
-                faceYawScale = Mathf.Max(0.04f, Mathf.Cos(progress * Mathf.PI * 0.5f));
-                faceVisible = progress < 0.96f;
+                float frontHalf = Mathf.Clamp01(progress * 2f);
+                faceYawScale = Mathf.Max(0.04f,
+                    Mathf.Cos(frontHalf * Mathf.PI * 0.5f));
+                faceVisible = progress < 0.5f;
             }
             else if (sourceState == "turn_to_front")
             {
                 float progress = Mathf.Clamp01(sourceStateTime / 0.25f);
-                faceYawScale = Mathf.Max(0.04f, Mathf.Sin(progress * Mathf.PI * 0.5f));
-                faceVisible = progress > 0.04f;
+                float frontHalf = Mathf.Clamp01((progress - 0.5f) * 2f);
+                faceYawScale = Mathf.Max(0.04f,
+                    Mathf.Sin(frontHalf * Mathf.PI * 0.5f));
+                faceVisible = progress >= 0.5f;
             }
             else if (sourceState == "work_laptop" ||
                      sourceState == "watch_tv" ||
@@ -143,6 +168,13 @@ namespace TokenPet
                          sourceEmotion == "dizzy" || sourceEmotion == "star")
                     expression = sourceEmotion;
             }
+
+            if (usingCanvasFaceSprites)
+            {
+                ApplyCanvasSpriteExpression(expression, mouthState, stateTime, look);
+                return;
+            }
+
             Vector2 gaze = Vector2.ClampMagnitude(look, 1f);
             float blink = expression == "idle" || expression == "walk"
                 ? UpdateBlink()
@@ -158,7 +190,7 @@ namespace TokenPet
             ShowOpenMouth(false, 0f, 0f, false);
             mouthLine.enabled = true;
             philtrum.enabled = true;
-            SetPhiltrum(-0.15f);
+            SetPhiltrum(MouthCenterY);
             faceRoot.localPosition = new Vector3(gaze.x * 0.018f, gaze.y * 0.008f, -0.05f);
 
             switch (expression)
@@ -167,7 +199,7 @@ namespace TokenPet
                     float step = Mathf.Sin(stateTime * 8.6f);
                     eyeScale.y *= 0.82f + Mathf.Abs(step) * 0.18f;
                     SetBrows(0.015f, -4f, 4f);
-                    SetDorkyCatMouth(0.15f, 0.078f + Mathf.Abs(step) * 0.008f);
+                    SetDorkyCatMouth(0.148f, 0.095f + Mathf.Abs(step) * 0.008f);
                     break;
 
                 case "poke":
@@ -176,7 +208,7 @@ namespace TokenPet
                     eyeOffset = Vector2.zero;
                     SetBrows(0.08f * surprise, 10f, -10f);
                     mouthLine.enabled = false;
-                    SetPhiltrum(-0.105f);
+                    SetPhiltrum(-0.134f);
                     ShowOpenMouth(true, 0.10f + surprise * 0.06f, 0.13f + surprise * 0.08f, false);
                     break;
 
@@ -202,19 +234,19 @@ namespace TokenPet
                     if (recover < 0.62f)
                         SetFlatMouth(Mathf.Lerp(0.14f, 0.10f, recover));
                     else
-                        SetDorkyCatMouth(0.15f, 0.078f);
+                        SetDorkyCatMouth(0.148f, 0.095f);
                     break;
 
                 case "happy":
                     SetHappyEyeShape();
                     SetBrowsVisible(false);
-                    SetDorkyCatMouth(0.16f, 0.088f);
+                    SetDorkyCatMouth(0.158f, 0.105f);
                     break;
 
                 case "blink":
                     SetClosedEyeShape();
                     SetBrows(0.005f, -3f, 3f);
-                    SetDorkyCatMouth(0.15f, 0.074f);
+                    SetDorkyCatMouth(0.148f, 0.090f);
                     break;
 
                 case "dizzy":
@@ -229,7 +261,7 @@ namespace TokenPet
                     SetStarEyes(true);
                     SetBrowsVisible(false);
                     mouthLine.enabled = false;
-                    SetPhiltrum(-0.105f);
+                    SetPhiltrum(-0.134f);
                     ShowOpenMouth(true, 0.14f, 0.17f, true);
                     break;
 
@@ -237,19 +269,21 @@ namespace TokenPet
                     SetClosedEyeShape();
                     SetBrowsVisible(false);
                     eyeScale.y = 0.85f;
-                    SetDorkyCatMouth(0.12f, 0.052f);
+                    SetDorkyCatMouth(0.120f, 0.065f);
                     break;
 
                 case "hungry":
                     eyeScale.y = 0.56f;
                     SetBrows(-0.025f, 15f, -15f);
-                    SetWorryMouth(stateTime * 0.28f);
+                    // Hungry can look sleepy, but the mascot's defining mouth
+                    // should stay guileless instead of turning into a frown.
+                    SetDorkyCatMouth(0.140f, 0.080f);
                     break;
 
                 default:
                     SetBrows(0f, -3f + gaze.y * 2f, 3f - gaze.y * 2f);
                     float smilePulse = (Mathf.Sin(stateTime * 2.15f) + 1f) * 0.5f;
-                    SetDorkyCatMouth(0.15f, 0.078f + smilePulse * 0.006f);
+                    SetDorkyCatMouth(0.148f, 0.095f + smilePulse * 0.006f);
                     break;
             }
 
@@ -258,12 +292,114 @@ namespace TokenPet
                 expression != "sleep" && expression != "star")
             {
                 mouthLine.enabled = false;
-                SetPhiltrum(-0.105f);
+                SetPhiltrum(-0.134f);
                 ShowOpenMouth(true, 0.13f, 0.16f, expression == "happy");
             }
 
-            ApplyEyePose(leftEyeRoot, new Vector2(-0.31f, 0.10f) + eyeOffset, eyeScale);
-            ApplyEyePose(rightEyeRoot, new Vector2(0.31f, 0.10f) + eyeOffset, eyeScale);
+            ApplyEyePose(leftEyeRoot, new Vector2(-EyeCenterX, EyeCenterY) + eyeOffset, eyeScale);
+            ApplyEyePose(rightEyeRoot, new Vector2(EyeCenterX, EyeCenterY) + eyeOffset, eyeScale);
+        }
+
+        private bool InitializeCanvasFaceSprites()
+        {
+            string[] names =
+            {
+                "normal", "blink", "happy", "open", "happy_open", "dizzy",
+                "star", "sleep", "hungry", "worried", "surprised"
+            };
+            foreach (string name in names)
+            {
+                Texture2D texture = Resources.Load<Texture2D>("FaceExpressions/" + name);
+                if (texture == null)
+                {
+                    Debug.LogWarning("Canvas face sprite missing: " + name +
+                        "; falling back to the procedural face rig.");
+                    foreach (Sprite loaded in canvasFaceSprites.Values)
+                        Destroy(loaded);
+                    canvasFaceSprites.Clear();
+                    return false;
+                }
+
+                Sprite sprite = Sprite.Create(
+                    texture,
+                    new Rect(0f, 0f, texture.width, texture.height),
+                    new Vector2(0.5f, 0.5f),
+                    100f,
+                    0,
+                    SpriteMeshType.FullRect);
+                sprite.name = "CanvasFace_" + name;
+                canvasFaceSprites[name] = sprite;
+            }
+
+            canvasFaceRenderer = faceRoot.gameObject.AddComponent<SpriteRenderer>();
+            canvasFaceRenderer.sortingOrder = 23;
+            canvasFaceRenderer.sprite = canvasFaceSprites["normal"];
+            return true;
+        }
+
+        private void ApplyCanvasSpriteExpression(
+            string expression,
+            string mouthState,
+            float stateTime,
+            Vector2 look)
+        {
+            string key;
+            switch ((expression ?? "idle").ToLowerInvariant())
+            {
+                case "poke":
+                    key = "surprised";
+                    break;
+                case "drag":
+                    key = "worried";
+                    break;
+                case "airborne":
+                case "dizzy":
+                    key = "dizzy";
+                    break;
+                case "land":
+                    key = stateTime < 0.36f ? "blink" : "normal";
+                    break;
+                case "happy":
+                    key = "happy";
+                    break;
+                case "blink":
+                    key = "blink";
+                    break;
+                case "star":
+                    key = "star";
+                    break;
+                case "sleep":
+                    key = "sleep";
+                    break;
+                case "hungry":
+                    key = "hungry";
+                    break;
+                default:
+                    key = "normal";
+                    break;
+            }
+
+            bool canBlink = expression == "idle" || expression == "walk";
+            if (canBlink && UpdateBlink() > 0.45f)
+                key = "blink";
+
+            bool wantsOpenMouth = string.Equals(
+                mouthState, "open", System.StringComparison.OrdinalIgnoreCase);
+            if (wantsOpenMouth && key != "sleep" && key != "star" &&
+                key != "dizzy" && key != "surprised")
+            {
+                key = key == "happy" ? "happy_open" : "open";
+            }
+
+            if (!canvasFaceSprites.TryGetValue(key, out Sprite sprite))
+                sprite = canvasFaceSprites["normal"];
+            canvasFaceRenderer.sprite = sprite;
+
+            Vector2 gaze = Vector2.ClampMagnitude(look, 1f);
+            faceRoot.localPosition = new Vector3(
+                gaze.x * 0.030f,
+                gaze.y * 0.016f,
+                -0.05f);
         }
 
         private Transform CreateEye(
@@ -273,16 +409,16 @@ namespace TokenPet
         {
             Transform root = new GameObject(eyeName).transform;
             root.SetParent(faceRoot, false);
-            eyeRenderer = CreateLine(eyeName + "_Dark", 0.145f, 23, root);
+            eyeRenderer = CreateLine(eyeName + "_Dark", 0.180f, 23, root);
             eyeRenderer.positionCount = 2;
-            eyeRenderer.SetPosition(0, new Vector3(0f, -0.055f, 0f));
-            eyeRenderer.SetPosition(1, new Vector3(0f, 0.055f, 0f));
+            eyeRenderer.SetPosition(0, new Vector3(0f, -0.0075f, 0f));
+            eyeRenderer.SetPosition(1, new Vector3(0f, 0.0075f, 0f));
 
             highlightRenderer = CreateLine(
                 eyeName + "_Highlight", 0.040f, 24, root, Color.white);
             highlightRenderer.positionCount = 2;
-            highlightRenderer.SetPosition(0, new Vector3(-0.025f, 0.038f, 0f));
-            highlightRenderer.SetPosition(1, new Vector3(-0.024f, 0.039f, 0f));
+            highlightRenderer.SetPosition(0, new Vector3(-0.026f, 0.026f, 0f));
+            highlightRenderer.SetPosition(1, new Vector3(-0.025f, 0.027f, 0f));
             return root;
         }
 
@@ -290,8 +426,8 @@ namespace TokenPet
         {
             blush.loop = false;
             blush.positionCount = 2;
-            blush.SetPosition(0, new Vector3(centerX - 0.085f, -0.10f, 0f));
-            blush.SetPosition(1, new Vector3(centerX + 0.085f, -0.10f, 0f));
+            blush.SetPosition(0, new Vector3(centerX - 0.085f, BlushCenterY, 0f));
+            blush.SetPosition(1, new Vector3(centerX + 0.085f, BlushCenterY, 0f));
         }
 
         private LineRenderer CreateLine(
@@ -321,16 +457,16 @@ namespace TokenPet
 
         private void SetRoundEyeShape()
         {
-            SetEyeStroke(leftEye, new Vector2(0f, -0.055f), new Vector2(0f, 0.055f), 0.145f);
-            SetEyeStroke(rightEye, new Vector2(0f, -0.055f), new Vector2(0f, 0.055f), 0.145f);
+            SetEyeStroke(leftEye, new Vector2(0f, -0.0075f), new Vector2(0f, 0.0075f), 0.180f);
+            SetEyeStroke(rightEye, new Vector2(0f, -0.0075f), new Vector2(0f, 0.0075f), 0.180f);
             leftHighlight.enabled = true;
             rightHighlight.enabled = true;
         }
 
         private void SetClosedEyeShape()
         {
-            SetEyeStroke(leftEye, new Vector2(-0.085f, 0f), new Vector2(0.085f, 0f), 0.060f);
-            SetEyeStroke(rightEye, new Vector2(-0.085f, 0f), new Vector2(0.085f, 0f), 0.060f);
+            SetEyeStroke(leftEye, new Vector2(-0.085f, 0f), new Vector2(0.085f, 0f), 0.080f);
+            SetEyeStroke(rightEye, new Vector2(-0.085f, 0f), new Vector2(0.085f, 0f), 0.080f);
             leftHighlight.enabled = false;
             rightHighlight.enabled = false;
         }
@@ -360,8 +496,8 @@ namespace TokenPet
             line.enabled = true;
             line.loop = false;
             line.positionCount = 5;
-            line.startWidth = 0.060f;
-            line.endWidth = 0.060f;
+            line.startWidth = 0.080f;
+            line.endWidth = 0.080f;
             for (int index = 0; index < 5; index++)
             {
                 float normalized = index / 4f;
@@ -383,8 +519,8 @@ namespace TokenPet
             rightStar.enabled = visible;
             if (!visible)
                 return;
-            SetStar(leftStar, new Vector2(-0.31f, 0.10f), 0.13f);
-            SetStar(rightStar, new Vector2(0.31f, 0.10f), 0.13f);
+            SetStar(leftStar, new Vector2(-EyeCenterX, EyeCenterY), 0.13f);
+            SetStar(rightStar, new Vector2(EyeCenterX, EyeCenterY), 0.13f);
         }
 
         private static void SetStar(LineRenderer line, Vector2 center, float radius)
@@ -404,8 +540,8 @@ namespace TokenPet
 
         private void SetBrows(float lift, float leftTilt, float rightTilt)
         {
-            SetBrow(leftBrow, new Vector2(-0.31f, 0.35f + lift), leftTilt);
-            SetBrow(rightBrow, new Vector2(0.31f, 0.35f + lift), rightTilt);
+            SetBrow(leftBrow, new Vector2(-BrowCenterX, BrowCenterY + lift), leftTilt);
+            SetBrow(rightBrow, new Vector2(BrowCenterX, BrowCenterY + lift), rightTilt);
         }
 
         private static void SetBrow(LineRenderer line, Vector2 center, float tilt)
@@ -418,8 +554,8 @@ namespace TokenPet
             for (int index = 0; index < 5; index++)
             {
                 float normalized = index / 4f;
-                float across = Mathf.Lerp(-0.10f, 0.10f, normalized);
-                float arch = Mathf.Sin(normalized * Mathf.PI) * 0.025f;
+                float across = Mathf.Lerp(-0.137f, 0.137f, normalized);
+                float arch = Mathf.Sin(normalized * Mathf.PI) * 0.077f;
                 line.SetPosition(index, center + along * across + normal * arch);
             }
         }
@@ -428,8 +564,8 @@ namespace TokenPet
         {
             philtrum.loop = false;
             philtrum.positionCount = 3;
-            philtrum.SetPosition(0, new Vector3(0f, 0.015f, 0f));
-            philtrum.SetPosition(1, new Vector3(-0.004f, Mathf.Lerp(0.015f, endY, 0.56f), 0f));
+            philtrum.SetPosition(0, new Vector3(0f, 0.046f, 0f));
+            philtrum.SetPosition(1, new Vector3(-0.004f, Mathf.Lerp(0.046f, endY, 0.56f), 0f));
             philtrum.SetPosition(2, new Vector3(0f, endY, 0f));
         }
 
@@ -437,11 +573,11 @@ namespace TokenPet
         {
             mouthLine.loop = false;
             mouthLine.positionCount = 5;
-            mouthLine.SetPosition(0, new Vector3(-halfWidth, -0.165f, 0f));
-            mouthLine.SetPosition(1, new Vector3(-halfWidth * 0.64f, -0.15f - depth, 0f));
-            mouthLine.SetPosition(2, new Vector3(0f, -0.15f, 0f));
-            mouthLine.SetPosition(3, new Vector3(halfWidth * 0.64f, -0.15f - depth, 0f));
-            mouthLine.SetPosition(4, new Vector3(halfWidth, -0.165f, 0f));
+            mouthLine.SetPosition(0, new Vector3(-halfWidth, MouthCenterY - 0.021f, 0f));
+            mouthLine.SetPosition(1, new Vector3(-halfWidth * 0.64f, MouthCenterY - depth, 0f));
+            mouthLine.SetPosition(2, new Vector3(0f, MouthCenterY, 0f));
+            mouthLine.SetPosition(3, new Vector3(halfWidth * 0.64f, MouthCenterY - depth, 0f));
+            mouthLine.SetPosition(4, new Vector3(halfWidth, MouthCenterY - 0.021f, 0f));
         }
 
         private void SetSmileMouth(float halfWidth, float depth)
@@ -524,8 +660,8 @@ namespace TokenPet
             if (!visible)
                 return;
 
-            SetCross(leftCrossA, leftCrossB, new Vector2(-0.31f, 0.10f), 0.105f);
-            SetCross(rightCrossA, rightCrossB, new Vector2(0.31f, 0.10f), 0.105f);
+            SetCross(leftCrossA, leftCrossB, new Vector2(-EyeCenterX, EyeCenterY), 0.105f);
+            SetCross(rightCrossA, rightCrossB, new Vector2(EyeCenterX, EyeCenterY), 0.105f);
         }
 
         private static void SetCross(
@@ -570,6 +706,12 @@ namespace TokenPet
 
         private void OnDestroy()
         {
+            foreach (Sprite sprite in canvasFaceSprites.Values)
+            {
+                if (sprite != null)
+                    Destroy(sprite);
+            }
+            canvasFaceSprites.Clear();
             if (lineMaterial != null)
                 Destroy(lineMaterial);
         }

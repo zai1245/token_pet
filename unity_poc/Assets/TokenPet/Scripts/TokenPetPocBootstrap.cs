@@ -6,7 +6,7 @@ namespace TokenPet
 {
     public sealed class TokenPetPocBootstrap : MonoBehaviour
     {
-        public const string RendererVersion = "0.8.0-preview";
+        public const string RendererVersion = "0.8.2-preview";
 
         private enum MotionState
         {
@@ -77,6 +77,7 @@ namespace TokenPet
         private string legacyExpression = "normal";
         private string legacyMouth = "normal";
         private string legacyState = "idle";
+        private float legacyStateStartedAt;
         private string legacyEffects = "";
         private float legacySatiety = 100f;
         private RectInt lastPublishedWorkArea;
@@ -212,6 +213,7 @@ namespace TokenPet
             equipment.LoadCatalog();
             legacyVisuals = rigRoot.gameObject.AddComponent<TokenPetLegacyVisuals>();
             legacyVisuals.Initialize(motionRoot, renderer);
+            legacyVisuals.SetExternalFurnitureStage(true);
             motionProfiles = TokenPetMotionProfiles.Load();
 
             rigRoot.position = InitialRigRestPosition;
@@ -524,15 +526,10 @@ namespace TokenPet
             ApplyLegacyPerformance(ref horizontal, ref vertical, ref rotation, ref scale);
 
             Vector3 targetPosition = new(horizontal, vertical, 0f);
-            bool backFacing =
-                string.Equals(legacyState, "back_idle", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(legacyState, "turn_to_back", StringComparison.OrdinalIgnoreCase);
-            bool sideFacing =
-                string.Equals(legacyState, "work_laptop", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(legacyState, "watch_tv", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(legacyState, "water_plant", StringComparison.OrdinalIgnoreCase);
+            float legacyStateTime = Mathf.Max(0f, Time.unscaledTime - legacyStateStartedAt);
+            bool backFacing = ShouldUseBackArtwork(legacyState, legacyStateTime);
             equipment?.SetBackFacing(backFacing);
-            float facingScale = backFacing ? -1f : (sideFacing ? 0.72f : 1f);
+            float facingScale = FacingScaleForLegacyState(legacyState, legacyStateTime);
             Vector3 targetScale = new(
                 Mathf.Max(0.12f, Mathf.Abs(scale.x)) * facingScale,
                 Mathf.Max(0.65f, scale.y),
@@ -596,6 +593,41 @@ namespace TokenPet
                 return 0f;
             float sine = Mathf.Sin(normalizedTime * Mathf.PI);
             return sine * sine;
+        }
+
+        private static float FacingScaleForLegacyState(string state, float stateTime)
+        {
+            const float turnDuration = 0.25f;
+            string normalized = (state ?? "idle").ToLowerInvariant();
+            if (normalized == "back_idle")
+                return -1f;
+            if (normalized == "work_laptop" || normalized == "watch_tv" ||
+                normalized == "water_plant")
+                return 0.72f;
+
+            float progress = Mathf.Clamp01(stateTime / turnDuration);
+            float rawScale;
+            if (normalized == "turn_to_back")
+                rawScale = Mathf.Cos(progress * Mathf.PI);
+            else if (normalized == "turn_to_front")
+                rawScale = -Mathf.Cos(progress * Mathf.PI);
+            else
+                return 1f;
+
+            // Keep a tiny silhouette at the profile so the pet feels as if it
+            // is rotating instead of blinking out for a frame.
+            if (Mathf.Abs(rawScale) < 0.06f)
+                rawScale = rawScale < 0f ? -0.06f : 0.06f;
+            return rawScale;
+        }
+
+        private static bool ShouldUseBackArtwork(string state, float stateTime)
+        {
+            const float halfTurn = 0.125f;
+            string normalized = (state ?? "idle").ToLowerInvariant();
+            return normalized == "back_idle" ||
+                (normalized == "turn_to_back" && stateTime >= halfTurn) ||
+                (normalized == "turn_to_front" && stateTime < halfTurn);
         }
 
         private void ScheduleIdleGesture(float fromTime = 0f)
@@ -744,6 +776,8 @@ namespace TokenPet
                     legacyState = string.IsNullOrEmpty(command.state)
                         ? "idle"
                         : command.state;
+                    if (!string.Equals(previousLegacyState, legacyState, StringComparison.OrdinalIgnoreCase))
+                        legacyStateStartedAt = Time.unscaledTime;
                     legacySatiety = Mathf.Clamp(command.satiety, 0f, 100f);
                     legacyEffects = command.effects ?? "";
                     legacyVisuals?.ApplySnapshot(command);
@@ -757,6 +791,7 @@ namespace TokenPet
                         EnterState(MotionState.Land);
                     }
                     ApplyLegacyState(command.state);
+                    furnitureStage?.ApplyPetState(legacyState);
                     lookTarget = new Vector2(
                         Mathf.Clamp(command.look_x / 12f, -1f, 1f),
                         Mathf.Clamp(-command.look_y / 6f, -1f, 1f));

@@ -25,6 +25,8 @@ namespace TokenPet
             public string slot;
             public string resource;
             public string back_resource;
+            public string paired_face_id;
+            public string paired_resource;
             public float offset_x;
             public float offset_y;
             // Painted accessories use a full transparent canvas.  Keeping the
@@ -40,6 +42,7 @@ namespace TokenPet
         private readonly Dictionary<string, AccessoryDefinition> catalog = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, GameObject> equippedObjects = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> equippedIds = new(StringComparer.OrdinalIgnoreCase);
+        private bool backFacing;
 
         public void RegisterSocket(string slot, Transform socket)
         {
@@ -105,8 +108,23 @@ namespace TokenPet
                 renderer.sortingOrder = definition.sorting_order +
                     (minimumOrder == int.MaxValue ? 0 : renderer.sortingOrder - minimumOrder);
 
+            // A helmet that wraps around the pet needs two depth layers: its
+            // crown stays in front while the long side guards sit behind the
+            // round body.  This prevents their inner/rear surfaces from being
+            // painted across a face mask while keeping the visible side shell.
+            Transform pairedUnderlay = instance.transform.Find("PairedUnderlayArtwork");
+            if (pairedUnderlay != null)
+            {
+                foreach (SpriteRenderer renderer in
+                    pairedUnderlay.GetComponentsInChildren<SpriteRenderer>(true))
+                {
+                    renderer.sortingOrder = 9;
+                }
+            }
+
             equippedObjects[slot] = instance;
             equippedIds[slot] = definition.id;
+            RefreshArtworkVariants();
             return true;
         }
 
@@ -154,6 +172,7 @@ namespace TokenPet
             }
             equippedObjects.Remove(slot);
             equippedIds.Remove(slot);
+            RefreshArtworkVariants();
         }
 
         public void SetSlotVisible(string slot, bool visible)
@@ -167,18 +186,35 @@ namespace TokenPet
 
         public void SetBackFacing(bool backFacing)
         {
+            this.backFacing = backFacing;
+            RefreshArtworkVariants();
+        }
+
+        private void RefreshArtworkVariants()
+        {
             foreach (GameObject current in equippedObjects.Values)
             {
                 if (current == null)
                     continue;
+
                 Transform front = current.transform.Find("FrontArtwork");
                 Transform back = current.transform.Find("BackArtwork");
-                if (front == null || back == null)
-                    continue;
-                if (front.gameObject.activeSelf == backFacing)
-                    front.gameObject.SetActive(!backFacing);
-                if (back.gameObject.activeSelf != backFacing)
-                    back.gameObject.SetActive(backFacing);
+                Transform paired = current.transform.Find("PairedArtwork");
+                Transform pairedUnderlay = current.transform.Find("PairedUnderlayArtwork");
+                bool showBack = backFacing && back != null;
+                // The split helmet is the normal front view, not a mask-only
+                // variant. Its side guards stay behind the pet whether or not
+                // the face slot currently contains Char's mask.
+                bool showPaired = !backFacing && paired != null;
+
+                if (front != null && front.gameObject.activeSelf == (showBack || showPaired))
+                    front.gameObject.SetActive(!showBack && !showPaired);
+                if (back != null && back.gameObject.activeSelf != showBack)
+                    back.gameObject.SetActive(showBack);
+                if (paired != null && paired.gameObject.activeSelf != showPaired)
+                    paired.gameObject.SetActive(showPaired);
+                if (pairedUnderlay != null && pairedUnderlay.gameObject.activeSelf != showPaired)
+                    pairedUnderlay.gameObject.SetActive(showPaired);
             }
         }
 
@@ -228,6 +264,21 @@ namespace TokenPet
                 else
                     Debug.LogWarning($"Missing rear accessory Resources/{backPath}; using front view.");
             }
+
+            if (!string.IsNullOrWhiteSpace(definition.paired_resource) &&
+                definition.paired_resource.StartsWith("sprite:", StringComparison.OrdinalIgnoreCase))
+            {
+                string pairedPath = definition.paired_resource.Substring("sprite:".Length);
+                Sprite pairedSprite = LoadPaintedSprite(pairedPath, definition,
+                    $"{definition.id}_paired");
+                if (pairedSprite != null)
+                {
+                    CreateArtwork(root.transform, "PairedArtwork", pairedSprite, false);
+                    CreatePairedSideUnderlay(root.transform, resourcePath, definition);
+                }
+                else
+                    Debug.LogWarning($"Missing paired accessory Resources/{pairedPath}; using front view.");
+            }
             return root;
         }
 
@@ -257,6 +308,45 @@ namespace TokenPet
             SpriteRenderer renderer = artwork.AddComponent<SpriteRenderer>();
             renderer.sprite = sprite;
             artwork.SetActive(visible);
+        }
+
+        private static void CreatePairedSideUnderlay(Transform parent,
+            string sourceResourcePath, AccessoryDefinition definition)
+        {
+            Texture2D texture = Resources.Load<Texture2D>(sourceResourcePath);
+            if (texture == null)
+                return;
+
+            GameObject underlay = new("PairedUnderlayArtwork");
+            underlay.transform.SetParent(parent, false);
+
+            float cropHeight = texture.height * 0.60f;
+            float sideWidth = texture.width * 0.43f;
+            CreateCroppedArtwork(underlay.transform, "LeftSideGuard", texture,
+                new Rect(0f, 0f, sideWidth, cropHeight), definition);
+            CreateCroppedArtwork(underlay.transform, "RightSideGuard", texture,
+                new Rect(texture.width - sideWidth, 0f, sideWidth, cropHeight), definition);
+            underlay.SetActive(false);
+        }
+
+        private static void CreateCroppedArtwork(Transform parent, string name,
+            Texture2D texture, Rect rect, AccessoryDefinition definition)
+        {
+            const float pixelsPerUnit = 400f;
+            Sprite sprite = Sprite.Create(texture, rect, new Vector2(0.5f, 0.5f),
+                pixelsPerUnit, 0u, SpriteMeshType.FullRect);
+            sprite.name = $"{definition.id}_{name}";
+
+            GameObject artwork = new(name);
+            artwork.transform.SetParent(parent, false);
+            float sourcePivotX = Mathf.Clamp01(definition.pivot_x) * texture.width;
+            float sourcePivotY = Mathf.Clamp01(definition.pivot_y) * texture.height;
+            artwork.transform.localPosition = new Vector3(
+                (rect.center.x - sourcePivotX) / pixelsPerUnit,
+                (rect.center.y - sourcePivotY) / pixelsPerUnit,
+                0f);
+            SpriteRenderer renderer = artwork.AddComponent<SpriteRenderer>();
+            renderer.sprite = sprite;
         }
 
         private static GameObject CreatePocCrown()

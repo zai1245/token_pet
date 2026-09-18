@@ -25,13 +25,18 @@ class UnityExpressionRigTests(unittest.TestCase):
             with self.subTest(state=state):
                 self.assertIn(f'case "{state}"', source)
 
-    def test_face_uses_overlay_compatible_line_renderers(self):
+    def test_face_uses_canvas_sprite_art_with_procedural_fallback(self):
         source = RIG_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("SpriteRenderer canvasFaceRenderer", source)
+        self.assertIn("InitializeCanvasFaceSprites", source)
+        self.assertIn("ApplyCanvasSpriteExpression", source)
+        self.assertIn("SpriteMeshType.FullRect", source)
+        # The old procedural implementation remains available if an art asset
+        # is missing, so a broken package can still display a usable pet face.
         self.assertIn("LineRenderer leftEye", source)
         self.assertIn("LineRenderer mouthFill", source)
         self.assertIn("LineRenderer philtrum", source)
         self.assertIn("SetDorkyCatMouth", source)
-        self.assertNotIn("SpriteRenderer", source)
 
     def test_faceless_body_is_loaded_before_visual_fallbacks(self):
         source = BOOTSTRAP_SOURCE.read_text(encoding="utf-8")

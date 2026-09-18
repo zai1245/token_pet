@@ -64,6 +64,11 @@ class UnityFullParityTests(unittest.TestCase):
             "sprite:AccessoriesV2/char_helmet_back",
             char_helmet.get("back_resource"),
         )
+        self.assertEqual("char_mask", char_helmet.get("paired_face_id"))
+        self.assertEqual(
+            "sprite:AccessoriesV2/char_helmet_with_mask",
+            char_helmet.get("paired_resource"),
+        )
         self.assertGreater(char_helmet["offset_y"], char_mask["offset_y"])
         self.assertGreater(char_helmet["sorting_order"], char_mask["sorting_order"])
         equipment = (SCRIPTS / "TokenPetEquipmentController.cs").read_text(
@@ -71,7 +76,49 @@ class UnityFullParityTests(unittest.TestCase):
         )
         bootstrap = (SCRIPTS / "TokenPetPocBootstrap.cs").read_text(encoding="utf-8")
         self.assertIn("SetBackFacing", equipment)
+        self.assertIn("PairedArtwork", equipment)
+        self.assertIn("PairedUnderlayArtwork", equipment)
+        self.assertIn("CreatePairedSideUnderlay", equipment)
+        self.assertNotIn("PairedFrontSideArtwork", equipment)
+        self.assertNotIn("CreatePairedFrontSideGuards", equipment)
+        self.assertIn("renderer.sortingOrder = 9", equipment)
+        self.assertIn("RefreshArtworkVariants", equipment)
+        self.assertIn("bool showPaired = !backFacing && paired != null", equipment)
+        self.assertNotIn(
+            'equippedIds.TryGetValue("face", out string equippedFaceId)',
+            equipment,
+        )
         self.assertIn("equipment?.SetBackFacing(backFacing)", bootstrap)
+
+        expression = (SCRIPTS / "TokenPetExpressionRig.cs").read_text(
+            encoding="utf-8"
+        )
+        hungry_case = expression.split('case "hungry":', 1)[1].split("break;", 1)[0]
+        self.assertIn("SetDorkyCatMouth", hungry_case)
+        self.assertNotIn("SetWorryMouth", hungry_case)
+
+    def test_unity_face_uses_the_canvas_emojinoko_proportions(self):
+        expression = (SCRIPTS / "TokenPetExpressionRig.cs").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("InitializeCanvasFaceSprites", expression)
+        self.assertIn("ApplyCanvasSpriteExpression", expression)
+        self.assertIn('Resources.Load<Texture2D>("FaceExpressions/" + name)', expression)
+        self.assertIn("SpriteMeshType.FullRect", expression)
+        for anchor in {
+            "EyeCenterX = 0.308f",
+            "EyeCenterY = 0.088f",
+            "BrowCenterX = 0.352f",
+            "BrowCenterY = 0.308f",
+            "BlushCenterX = 0.484f",
+            "BlushCenterY = -0.044f",
+            "MouthCenterY = -0.176f",
+        }:
+            self.assertIn(anchor, expression)
+        self.assertIn('CreateLine("Eye_Left_X_A", 0.074f', expression)
+        self.assertIn("new Color32(60, 34, 3, 255)", expression)
+        self.assertIn("new Color32(244, 168, 184, 220)", expression)
+        self.assertIn("SetDorkyCatMouth(0.148f, 0.095f", expression)
 
     def test_every_consumable_visual_is_implemented(self):
         source = (SCRIPTS / "TokenPetLegacyVisuals.cs").read_text(encoding="utf-8")
@@ -105,6 +152,10 @@ class UnityFullParityTests(unittest.TestCase):
         self.assertIn('event_name == "furniture_action"', monitor)
         self.assertIn("_request_furniture_interaction", monitor)
         self.assertIn("moveArmedId", stage)
+        self.assertIn("ApplyPetState", stage)
+        self.assertIn("FurnitureForState", stage)
+        self.assertIn("ApplyFurnitureMotion", stage)
+        self.assertIn("SetExternalFurnitureStage(true)", bootstrap)
         for item_id in {
             "futon", "laptop", "trampoline", "night_lamp",
             "succulent_pot", "lazy_sofa", "pixel_tv", "kotatsu",
@@ -121,6 +172,20 @@ class UnityFullParityTests(unittest.TestCase):
         self.assertIn('event_name = "desktop_metrics"', bootstrap)
         self.assertIn("floor_y", bootstrap)
         self.assertIn("if (overlay != null && overlay.IsDesktopStage)", bootstrap)
+
+    def test_unity_turning_and_furniture_poses_keep_canvas_character(self):
+        bootstrap = (SCRIPTS / "TokenPetPocBootstrap.cs").read_text(encoding="utf-8")
+        expression = (SCRIPTS / "TokenPetExpressionRig.cs").read_text(encoding="utf-8")
+        limbs = (SCRIPTS / "TokenPetLimbRig.cs").read_text(encoding="utf-8")
+        self.assertIn("FacingScaleForLegacyState", bootstrap)
+        self.assertIn("ShouldUseBackArtwork", bootstrap)
+        self.assertIn("Mathf.Cos(progress * Mathf.PI)", bootstrap)
+        self.assertIn("faceVisible = progress < 0.5f", expression)
+        self.assertIn("faceVisible = progress >= 0.5f", expression)
+        self.assertIn('CreateLimb("Tail_Back"', limbs)
+        self.assertIn("ApplyBackTail", limbs)
+        for state in {"relax_sofa", "warm_kotatsu", "watch_tv", "meditate_lamp"}:
+            self.assertIn(f'case "{state}"', limbs)
 
     def test_full_visual_snapshot_contract_exists_on_both_sides(self):
         python_source = (ROOT / "unity_renderer_bridge.py").read_text(encoding="utf-8")

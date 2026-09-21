@@ -71,6 +71,21 @@ class UnityFullParityTests(unittest.TestCase):
         )
         self.assertGreater(char_helmet["offset_y"], char_mask["offset_y"])
         self.assertGreater(char_helmet["sorting_order"], char_mask["sorting_order"])
+
+        # Ordinary hats and ears must overlap the round head instead of using
+        # the deliberately floating halo baseline. The helmet keeps its own
+        # full-body wrap calibration.
+        fitted_headwear = {
+            "scholar_cap", "cat_ears", "crown", "gentleman_hat",
+            "demon_horns", "sakura_hairpin", "wizard_hat", "clover_sprout",
+        }
+        for item in head_items:
+            if item["id"] in fitted_headwear:
+                with self.subTest(headwear=item["id"]):
+                    self.assertLessEqual(item["offset_y"], 0.66)
+
+        headset = next(item for item in catalog["items"] if item["id"] == "gamer_headset")
+        self.assertLessEqual(headset["offset_y"], 0.0)
         equipment = (SCRIPTS / "TokenPetEquipmentController.cs").read_text(
             encoding="utf-8"
         )
@@ -237,6 +252,40 @@ class UnityFullParityTests(unittest.TestCase):
         self.assertIn("public int screen_width", ipc)
         self.assertIn("public float dpi", ipc)
         self.assertNotIn("random.random() < 0.00025", monitor)
+
+    def test_unity_context_menu_keeps_the_complete_legacy_feature_set(self):
+        monitor = (ROOT / "emojinoko_monitor.py").read_text(encoding="utf-8")
+        start = monitor.index("    def _show_unity_action_menu")
+        end = monitor.index("    def _show_deleted_memos_menu", start)
+        menu = monitor[start:end]
+        for callback in {
+            "self.open_ai_chat",
+            "self.simulate_usage",
+            "self.show_current_cost",
+            "self.open_detailed_stats",
+            "self._toggle_unity_status_hud",
+            "self.buy_coffee",
+            "self.play_rps",
+            "self.toggle_basketball_game",
+            "self.toggle_fruit_catcher",
+            "self.toggle_slot_machine",
+            "self._open_unity_shop_from_menu",
+            "self.add_new_memo",
+            "self._show_deleted_memos_menu",
+            "self.open_hotkey_settings",
+            "self.trigger_manual_update_check",
+            "self.manual_refresh",
+            "self._logout",
+            "self.root.destroy",
+        }:
+            with self.subTest(callback=callback):
+                self.assertIn(callback, menu)
+
+        # Cost and detailed statistics must remain visible in the local Unity
+        # preview too; account-only refresh/logout stay mode-dependent.
+        mode_gate = menu.index("if not self.STANDALONE:")
+        self.assertLess(menu.index("self.show_current_cost"), mode_gate)
+        self.assertLess(menu.index("self.open_detailed_stats"), mode_gate)
 
     def test_face_textures_do_not_change_mip_level_across_windows_dpi(self):
         resources = ROOT / "unity_poc" / "Assets" / "TokenPet" / "Resources"

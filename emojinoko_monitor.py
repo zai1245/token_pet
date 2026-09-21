@@ -2918,29 +2918,27 @@ class EmojinokoMonitor:
         self.context_menu.post(event.x_root, event.y_root)
 
     def _show_unity_action_menu(self, x_root, y_root):
-        """顯示與 Unity 地瓜球同色系的功能面板。"""
+        """顯示與 Unity 地瓜球同色系、功能完整的右鍵選單。"""
         status_label = "隱藏狀態" if self._unity_status_visible else "顯示狀態"
         common = [
-            ("💬  找地瓜球聊天", self.open_ai_chat),
-            ("🍠  投餵地瓜球", self.simulate_usage),
-            (f"📊  {status_label}", self._toggle_unity_status_hud),
-            ("☕  請喝咖啡", self.buy_coffee),
-            ("✊  猜拳", self.play_rps),
-            ("🏀  投籃", self.toggle_basketball_game),
-            ("🍎  接水果", self.toggle_fruit_catcher),
-            ("🎰  幸運拉霸", self.toggle_slot_machine),
-            ("🛒  道具與家具", self._open_unity_shop_from_menu),
+            ("💬  找地瓜球尬聊 (AI Chat)", self.open_ai_chat),
+            ("🍠  投餵／模擬用量增加", self.simulate_usage),
+            ("💰  查看目前費用", self.show_current_cost),
+            ("📊  詳細 Token 統計", self.open_detailed_stats),
+            (f"📋  {status_label}資訊看板", self._toggle_unity_status_hud),
+            ("☕  請喝咖啡 (30 🪙)", self.buy_coffee),
+            ("✊  玩猜拳 (5 🪙)", self.play_rps),
+            ("🏀  投籃小遊戲", self.toggle_basketball_game),
+            ("🍎  接水果小遊戲", self.toggle_fruit_catcher),
+            ("🎰  幸運拉霸機", self.toggle_slot_machine),
+            ("🛒  道具與家具商店", self._open_unity_shop_from_menu),
             ("📝  新增便利貼", self.add_new_memo),
             ("↩  回復便利貼", lambda: self._show_deleted_memos_menu(x_root, y_root)),
-            ("⌨  快速鍵", self.open_hotkey_settings),
+            ("⌨  快速鍵設定", self.open_hotkey_settings),
             ("🔄  檢查更新", self.trigger_manual_update_check),
         ]
         if not self.STANDALONE:
-            common[1:1] = [
-                ("↻  立即對帳", self.manual_refresh),
-                ("💰  目前費用", self.show_current_cost),
-                ("▥  Token 統計", self.open_detailed_stats),
-            ]
+            common.insert(1, ("↻  立即對帳", self.manual_refresh))
             common.append(("⏏  登出帳號", self._logout))
         # Column-major layout: insert at the first row of the right column so
         # the original exit action is always visible, rather than buried at
@@ -4671,7 +4669,10 @@ class TokenPetActionMenu(tk.Toplevel):
 
         columns = 2 if len(entries) > 5 else 1
         rows = max(1, math.ceil(len(entries) / columns))
-        width = 264 if columns == 2 else 236
+        # The Unity menu carries the complete legacy labels. Give each column
+        # enough room so important details such as prices and Token statistics
+        # are not silently clipped on high-DPI desktops.
+        width = 390 if columns == 2 else 252
         header_height = 34
         row_height = 27
         height = header_height + rows * row_height + 8

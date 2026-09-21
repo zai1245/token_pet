@@ -20,6 +20,24 @@ https://github.com/zai1245/token_pet/releases
 `collect_debug_logs.cmd`，桌面會產生 `TokenPet-debug-logs-....zip`；回報問題時
 附上這個 ZIP。它包含 Python/IPC 診斷與 Unity Player log，不包含登入密碼。
 
+## 整合包自動更新
+
+安裝過含 GitHub 更新器的整合包後，地瓜球會在啟動時背景檢查 GitHub Releases，
+也可以從右鍵選單選擇 **檢查更新**。Preview 版會接收新的 prerelease 與正式版。
+
+發現新版時，程式會詢問是否更新，接著下載 `TokenPetIntegrated-...zip`、核對
+GitHub Asset 的 SHA-256 digest，並由獨立更新器在 Python 與 Unity 關閉後替換
+整個整合包再重新啟動。`.credentials`、存檔與使用者設定不在套件覆蓋清單內，
+更新失敗時則會還原已被覆蓋的檔案。更新紀錄位於：
+
+```text
+%LOCALAPPDATA%\TokenPet\logs\TokenPet-updater.log
+```
+
+直接從 Git 工作區執行時不會自動覆蓋原始碼，請使用 `git pull` 更新。
+`v0.8.5-preview` 是第一個內建 GitHub 更新器的啟動版本；更舊的整合包需要先
+手動下載這一版，之後才可由程式自行更新。
+
 ## 維護者一鍵發佈
 
 需求：Git、Python、GitHub CLI `gh`、Unity `6000.0.65f1`，且 `gh auth status`

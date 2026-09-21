@@ -12,6 +12,7 @@ import math
 import random
 import re
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 from datetime import datetime
 
@@ -33,6 +34,12 @@ from emojinoko_game import (
     TOKEN_TO_XP_RATIO, TOKEN_TO_SATIETY, TOKEN_TO_COIN
 )
 from unity_renderer_bridge import UnityRendererBridge, unity_renderer_requested
+from tokenpet_github_updater import (
+    download_and_verify,
+    find_newer_release,
+    launch_external_installer,
+)
+from tokenpet_version import GITHUB_REPOSITORY, UPDATE_CHANNEL, VERSION
 
 def time_ms():
     return time.time() * 1000.0
@@ -50,8 +57,8 @@ def _accessory_slot(item_id):
         return "body"
     return "face"
 
-# 當前地瓜球 App 版本
-CURRENT_VERSION = "2.9.4"
+# 當前地瓜球整合包版本（與 GitHub Release / Unity Renderer 同步）
+CURRENT_VERSION = VERSION
 
 
 class _RuntimeTee:
@@ -3924,7 +3931,7 @@ class EmojinokoMonitor:
     # ──────────────────────────────────────────────────
     # 內網自動更新系統 (Intranet Auto-Updater Client - 獨立批次無縫交棒版)
     # ──────────────────────────────────────────────────
-    def check_auto_update(self, manual=False):
+    def _check_intranet_update_legacy(self, manual=False):
         """背景檢查是否有新版本 (加固版：支援 UNC 逾時預檢與友善提示)"""
         if getattr(self, "STANDALONE", False):
             if manual:
@@ -3963,7 +3970,7 @@ class EmojinokoMonitor:
                     else:
                         dl_url = raw_dl
                     msg = data.get("changelog", "有新版本更新可用！")
-                    self.root.after(0, self._prompt_update, srv_ver, dl_url, msg)
+                    self.root.after(0, self._prompt_intranet_update_legacy, srv_ver, dl_url, msg)
                 elif manual:
                     self.root.after(0, lambda: messagebox.showinfo("檢查更新", f"目前已是最新版本 (v{CURRENT_VERSION})！"))
             except Exception as e:
@@ -3989,7 +3996,7 @@ class EmojinokoMonitor:
                     raw_dl = data.get("download_url", "TokenPet.exe")
                     dl_url = raw_dl if raw_dl.startswith("http") else f"{update_url.rstrip('/')}/{raw_dl.lstrip('/')}"
                     msg = data.get("changelog", "有新版本更新可用！")
-                    self.root.after(0, self._prompt_update, srv_ver, dl_url, msg)
+                    self.root.after(0, self._prompt_intranet_update_legacy, srv_ver, dl_url, msg)
                 elif manual:
                     self.root.after(0, lambda: messagebox.showinfo("檢查更新", f"目前已是最新版本 (v{CURRENT_VERSION})！"))
             else:
@@ -4001,10 +4008,10 @@ class EmojinokoMonitor:
             if manual:
                 self.root.after(0, lambda: messagebox.showerror("檢查更新", f"連線更新伺服器失敗:\n{str(e)}"))
 
-    def trigger_manual_update_check(self):
+    def _trigger_intranet_update_check_legacy(self):
         """手動觸發更新檢查"""
         self.create_text_popup("🔍 檢查更新...", 170, 120, color=ACCENT_COLOR)
-        threading.Thread(target=self.check_auto_update, kwargs={"manual": True}, daemon=True).start()
+        threading.Thread(target=self._check_intranet_update_legacy, kwargs={"manual": True}, daemon=True).start()
 
     def _parse_version(self, ver_str):
         """健壯解析版本號，自動濾除非數字字元 (例如 'v2.2.5' -> (2, 2, 5))"""
@@ -4022,12 +4029,12 @@ class EmojinokoMonitor:
         except Exception:
             return (0, 0, 0)
 
-    def _prompt_update(self, new_ver, dl_url, changelog):
+    def _prompt_intranet_update_legacy(self, new_ver, dl_url, changelog):
         """直接在背景自動下載更新並進行無縫替換"""
         self.create_text_popup(f"📥 發現 v{new_ver}，自動下載更新...", 170, 120, color=ACCENT_COLOR)
-        threading.Thread(target=self._download_and_swap, args=(dl_url,), daemon=True).start()
+        threading.Thread(target=self._download_and_swap_legacy, args=(dl_url,), daemon=True).start()
 
-    def _download_and_swap(self, dl_url):
+    def _download_and_swap_legacy(self, dl_url):
         """下載新版本，並生成獨立升級批次腳本交棒替換，徹底 100% 根除 Windows 檔案鎖死與權限問題"""
         try:
             if not getattr(sys, 'frozen', False):
@@ -4118,6 +4125,131 @@ del /f /q "{backup_old_exe}" >nul 2>&1
             import traceback
             traceback.print_exc()
             self.root.after(0, lambda: messagebox.showerror("更新錯誤", f"自動更新失敗:\n{str(e)}"))
+
+    # ──────────────────────────────────────────────────
+    # GitHub Releases whole-package updater
+    # The legacy intranet/single-EXE updater above remains namespaced for
+    # backwards-reference, while all live menu/startup checks use GitHub.
+    # ──────────────────────────────────────────────────
+    def check_auto_update(self, manual=False):
+        """Check the configured GitHub Release channel without blocking Tk."""
+        if not manual:
+            last_check = float(self.config.get("last_github_update_check", 0) or 0)
+            if time.time() - last_check < 6 * 60 * 60:
+                return
+            checked_at = time.time()
+            self.config["last_github_update_check"] = checked_at
+            save_config({"last_github_update_check": checked_at})
+        try:
+            release = find_newer_release(
+                GITHUB_REPOSITORY,
+                CURRENT_VERSION,
+                include_prerelease=UPDATE_CHANNEL == "preview",
+            )
+            if release is None:
+                if manual:
+                    self.root.after(
+                        0,
+                        lambda: messagebox.showinfo(
+                            "檢查更新",
+                            f"目前已是最新版本（v{CURRENT_VERSION}）。",
+                        ),
+                    )
+                return
+            print(
+                f"[GitHub Update] available={release['version']} "
+                f"asset={release['asset_name']}"
+            )
+            self.root.after(0, self._prompt_github_update, release)
+        except Exception as exc:
+            print(f"[GitHub Update] check failed: {exc!r}")
+            if manual:
+                self.root.after(
+                    0,
+                    lambda error=str(exc): messagebox.showerror(
+                        "檢查更新失敗",
+                        f"無法連線 GitHub Releases：\n{error}",
+                    ),
+                )
+
+    def trigger_manual_update_check(self):
+        """Run a GitHub update check from the Unity/Canvas context menu."""
+        self.create_text_popup("🔍 正在檢查 GitHub 更新…", 170, 120, color=ACCENT_COLOR)
+        threading.Thread(
+            target=self.check_auto_update,
+            kwargs={"manual": True},
+            daemon=True,
+        ).start()
+
+    def _prompt_github_update(self, release):
+        notes = str(release.get("notes") or "").strip()
+        if len(notes) > 700:
+            notes = notes[:700].rstrip() + "…"
+        size_mb = int(release.get("size") or 0) / (1024 * 1024)
+        message = (
+            f"發現地瓜球 v{release['version']}\n"
+            f"整合包大小：{size_mb:.1f} MB\n\n"
+            "要現在下載、驗證並自動重新啟動嗎？"
+        )
+        if notes:
+            message += f"\n\n更新內容：\n{notes}"
+        if not messagebox.askyesno("地瓜球有新版本", message):
+            return
+        threading.Thread(
+            target=self._download_github_update,
+            args=(release,),
+            daemon=True,
+        ).start()
+
+    def _download_github_update(self, release):
+        try:
+            install_dir = os.path.dirname(os.path.abspath(__file__))
+            package_marker = os.path.join(install_dir, "PACKAGE_INFO.txt")
+            if not os.path.exists(package_marker):
+                self.root.after(
+                    0,
+                    lambda: messagebox.showinfo(
+                        "開發環境不自動覆蓋",
+                        "目前是 Git 原始碼工作區。請使用 git pull 更新；\n"
+                        "從 GitHub Release 解壓的整合包才會執行自動替換。",
+                    ),
+                )
+                return
+
+            update_dir = os.path.join(
+                os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+                "TokenPet",
+                "updates",
+            )
+            os.makedirs(update_dir, exist_ok=True)
+            archive = os.path.join(update_dir, release["asset_name"])
+            self.root.after(
+                0,
+                lambda: self.create_text_popup(
+                    "📥 正在下載並驗證新版…", 170, 120, color=ACCENT_COLOR
+                ),
+            )
+            digest = download_and_verify(release, Path(archive))
+            print(f"[GitHub Update] verified sha256={digest}")
+            launch_external_installer(Path(archive), Path(install_dir), os.getpid())
+            self.root.after(
+                0,
+                lambda: self.create_text_popup(
+                    "🚀 更新就緒，正在重新啟動…", 170, 120, color=GREEN_COLOR
+                ),
+            )
+            self.root.after(700, self.root.destroy)
+        except Exception as exc:
+            import traceback
+
+            traceback.print_exc()
+            self.root.after(
+                0,
+                lambda error=str(exc): messagebox.showerror(
+                    "GitHub 更新失敗",
+                    f"新版未套用，舊版仍可繼續使用。\n\n{error}",
+                ),
+            )
 
 
 # ──────────────────────────────────────────────────

@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 import shutil
 import argparse
+import hashlib
+import json
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -23,6 +25,8 @@ SOURCE_FILES = (
     "UNITY_POC.md",
     "emojinoko_game.py",
     "emojinoko_monitor.py",
+    "tokenpet_github_updater.py",
+    "tokenpet_version.py",
     "unity_renderer_bridge.py",
     "usage_widget.py",
 )
@@ -42,7 +46,17 @@ def renderer_version() -> str:
     match = re.search(r'RendererVersion\s*=\s*"([^"]+)"', bootstrap.read_text(encoding="utf-8"))
     if not match:
         raise RuntimeError("Unable to read RendererVersion from TokenPetPocBootstrap.cs")
-    return match.group(1)
+    renderer = match.group(1)
+    version_source = (ROOT / "tokenpet_version.py").read_text(encoding="utf-8")
+    python_match = re.search(r'^VERSION\s*=\s*"([^"]+)"', version_source, re.MULTILINE)
+    if not python_match:
+        raise RuntimeError("Unable to read VERSION from tokenpet_version.py")
+    python_version = python_match.group(1)
+    if python_version != renderer:
+        raise RuntimeError(
+            f"Release version mismatch: Python={python_version}, Unity={renderer}"
+        )
+    return renderer
 
 
 def copy_entry(source: Path, destination: Path) -> None:
@@ -100,6 +114,21 @@ def main() -> None:
         "Environment and rebuild instructions: DEVELOPMENT.md and UNITY_POC.md\n"
     )
     (package_dir / "PACKAGE_INFO.txt").write_text(manifest, encoding="utf-8")
+
+    manifest_files = {}
+    for path in sorted(package_dir.rglob("*")):
+        if path.is_file():
+            manifest_files[path.relative_to(package_dir).as_posix()] = hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
+    (package_dir / "PACKAGE_MANIFEST.json").write_text(
+        json.dumps(
+            {"version": version, "files": manifest_files},
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
     with ZipFile(archive_path, "w", ZIP_DEFLATED) as archive:
         for path in sorted(package_dir.rglob("*")):

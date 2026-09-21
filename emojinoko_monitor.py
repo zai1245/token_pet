@@ -45,6 +45,17 @@ def time_ms():
     return time.time() * 1000.0
 
 
+def map_unity_throw_velocity(pointer_vx, desktop_vy):
+    """Convert DPI-aware pointer pixels/second into desktop physics/frame."""
+    speed = math.hypot(pointer_vx, desktop_vy)
+    if speed < 110.0:
+        return 0.0, 1.5, speed
+    impulse_scale = 0.022
+    fall_vx = max(-24.0, min(24.0, pointer_vx * impulse_scale))
+    fall_vy = max(-32.0, min(20.0, desktop_vy * impulse_scale))
+    return fall_vx, fall_vy, speed
+
+
 def _accessory_slot(item_id):
     if item_id in {
         "scholar_cap", "cat_ears", "crown", "halo", "gentleman_hat",
@@ -578,6 +589,22 @@ class EmojinokoMonitor:
                 self._request_furniture_interaction(payload.get("item", ""))
             elif event_name == "furniture_despawn":
                 self.despawn_furniture(payload.get("item", ""))
+            elif event_name == "basketball_moved":
+                hoop = getattr(self, "basketball_hoop", None)
+                if isinstance(hoop, UnityBasketballHoop):
+                    hoop.set_position(
+                        int(payload.get("x", hoop.winfo_x())),
+                        int(payload.get("y", hoop.winfo_y())),
+                    )
+                    self.pet_data["basketball_position"] = {
+                        "x": hoop.winfo_x(),
+                        "y": hoop.winfo_y(),
+                    }
+                    self.save_pet_savegame()
+            elif event_name == "basketball_closed":
+                hoop = getattr(self, "basketball_hoop", None)
+                if isinstance(hoop, UnityBasketballHoop):
+                    hoop.mark_closed()
             elif event_name == "drag_released":
                 x = int(payload.get("x", self._physics_win_x))
                 y = int(payload.get("y", self._physics_win_y))
@@ -706,7 +733,7 @@ class EmojinokoMonitor:
         vx = float(payload.get("velocity_x", 0.0))
         # Unity reports screen-up as positive; Tk/desktop Y grows downwards.
         vy = -float(payload.get("velocity_y", 0.0))
-        speed = math.hypot(vx, vy)
+        fall_vx, fall_vy, speed = map_unity_throw_velocity(vx, vy)
         current_y = float(self._physics_win_y)
         self._fall_peak_y = current_y
         m_info = self.get_current_monitor_info()
@@ -717,12 +744,11 @@ class EmojinokoMonitor:
             self.pet.state = "idle"
             return
 
-        # Pointer deltas can spike when Windows hands focus back to the layered
-        # window. Cap the inherited impulse so an upward flick never leaves the
-        # pet hovering for several seconds before gravity wins.
-        self._fall_vx = max(-12.0, min(12.0, vx * 0.016))
-        self._fall_vy = max(-9.0, min(10.0, vy * 0.016))
-        self._fall_gravity = 1.05
+        # Preserve enough upward impulse to reach the draggable basketball hoop
+        # while capping wild focus/DPI spikes. A gentle release still falls.
+        self._fall_vx = fall_vx
+        self._fall_vy = fall_vy
+        self._fall_gravity = 0.85
         self._unity_fall_started_at = time.monotonic()
         self._unity_floor_bounced = False
         self.pet.roll_angle = 0.0
@@ -779,6 +805,8 @@ class EmojinokoMonitor:
         print("[Unity Renderer] Ready; legacy pet hidden and standing by as fallback.")
         if "--debug-open-shop" in sys.argv:
             self.root.after(250, self.open_shop)
+        if "--debug-open-basketball" in sys.argv:
+            self.root.after(250, self.toggle_basketball_game)
 
     def _fallback_to_legacy_renderer(self, reason, detail=""):
         bridge = getattr(self, "unity_renderer", None)
@@ -803,6 +831,11 @@ class EmojinokoMonitor:
         for item_id, furniture in list(getattr(self, "spawned_furniture_wins", {}).items()):
             if isinstance(furniture, UnityFurnitureProxy):
                 self.spawned_furniture_wins[item_id] = FurnitureWindow(self, item_id)
+        hoop = getattr(self, "basketball_hoop", None)
+        if isinstance(hoop, UnityBasketballHoop):
+            hoop_x, hoop_y = hoop.winfo_x(), hoop.winfo_y()
+            self.basketball_hoop = BasketballHoop(self)
+            self.basketball_hoop.geometry(f"300x300+{hoop_x}+{hoop_y}")
         suffix = f": {detail}" if detail else ""
         print(f"[Unity Renderer] Fallback to legacy ({reason}){suffix}")
 
@@ -2102,7 +2135,15 @@ class EmojinokoMonitor:
             self.basketball_hoop.close_game()
             self.create_text_popup("🏀 關閉投籃小遊戲", 170, 120, color=ACCENT_COLOR)
         else:
-            self.basketball_hoop = BasketballHoop(self)
+            bridge = getattr(self, "unity_renderer", None)
+            if getattr(self, "_unity_renderer_active", False) and bridge is not None:
+                try:
+                    self.basketball_hoop = UnityBasketballHoop(self)
+                except Exception as exc:
+                    print(f"[Unity Basketball] Falling back to Tk hoop: {exc}")
+                    self.basketball_hoop = BasketballHoop(self)
+            else:
+                self.basketball_hoop = BasketballHoop(self)
             self.create_text_popup("🏀 投籃小遊戲開始！", 170, 120, color=YELLOW_COLOR)
 
     def toggle_fruit_catcher(self):
@@ -4255,6 +4296,80 @@ del /f /q "{backup_old_exe}" >nul 2>&1
 # ──────────────────────────────────────────────────
 # 投籃小遊戲籃框視窗 (Basketball Hoop Window)
 # ──────────────────────────────────────────────────
+class UnityBasketballHoop:
+    """Tk-compatible hoop model whose artwork is rendered by Unity."""
+
+    width = 300
+    height = 300
+
+    def __init__(self, monitor):
+        self.monitor = monitor
+        self.net_offset_y = 0.0
+        pet_x, pet_y = monitor._get_pet_desktop_position()
+        m_info = monitor.get_current_monitor_info()
+        default_x = max(
+            m_info["mon_x"] + 8,
+            min(m_info["mon_x"] + m_info["mon_w"] - self.width - 8, pet_x + 180),
+        )
+        default_y = max(
+            m_info["mon_y"] + 8,
+            min(m_info["mon_y"] + m_info["mon_h"] - self.height - 48, pet_y - 280),
+        )
+        saved = monitor.pet_data.get("basketball_position", {})
+        self._x = max(
+            m_info["mon_x"] + 8,
+            min(
+                m_info["mon_x"] + m_info["mon_w"] - self.width - 8,
+                int(saved.get("x", default_x)),
+            ),
+        )
+        self._y = max(
+            m_info["mon_y"] + 8,
+            min(
+                m_info["mon_y"] + m_info["mon_h"] - self.height - 48,
+                int(saved.get("y", default_y)),
+            ),
+        )
+        bridge = getattr(monitor, "unity_renderer", None)
+        if bridge is None or not bridge.show_basketball(self._x, self._y):
+            raise RuntimeError("Unity basketball renderer is unavailable")
+
+    def winfo_x(self):
+        return int(self._x)
+
+    def winfo_y(self):
+        return int(self._y)
+
+    def winfo_width(self):
+        return self.width
+
+    def winfo_height(self):
+        return self.height
+
+    def set_position(self, x, y):
+        self._x = int(x)
+        self._y = int(y)
+
+    def trigger_goal(self):
+        self.net_offset_y = 12.0
+        bridge = getattr(self.monitor, "unity_renderer", None)
+        if bridge is not None:
+            bridge.basketball_goal()
+        self.monitor.root.after(350, self._settle_net)
+
+    def _settle_net(self):
+        self.net_offset_y = 0.0
+
+    def close_game(self):
+        bridge = getattr(self.monitor, "unity_renderer", None)
+        if bridge is not None:
+            bridge.hide_basketball()
+        self.monitor.basketball_hoop = None
+
+    def mark_closed(self):
+        self.monitor.basketball_hoop = None
+
+
 class BasketballHoop(tk.Toplevel):
     def __init__(self, parent_monitor):
         super().__init__(parent_monitor.root)
@@ -4263,12 +4378,20 @@ class BasketballHoop(tk.Toplevel):
         
         # 取得主視窗所在的螢幕，放置籃框在相對偏右上的位置
         m_info = parent_monitor.get_current_monitor_info()
-        wx = parent_monitor.root.winfo_x()
-        wy = parent_monitor.root.winfo_y()
+        wx, wy = parent_monitor._get_pet_desktop_position()
         
         # 初始幾何設定 300x300，放在靠近桌寵右上方
-        hx = max(m_info["mon_x"] + 50, min(m_info["mon_x"] + m_info["mon_w"] - 350, wx + 180))
-        hy = max(m_info["mon_y"] + 50, min(m_info["mon_y"] + m_info["mon_h"] - 450, wy - 280))
+        default_hx = max(m_info["mon_x"] + 50, min(m_info["mon_x"] + m_info["mon_w"] - 350, wx + 180))
+        default_hy = max(m_info["mon_y"] + 50, min(m_info["mon_y"] + m_info["mon_h"] - 450, wy - 280))
+        saved = parent_monitor.pet_data.get("basketball_position", {})
+        hx = max(
+            m_info["mon_x"] + 8,
+            min(m_info["mon_x"] + m_info["mon_w"] - 308, int(saved.get("x", default_hx))),
+        )
+        hy = max(
+            m_info["mon_y"] + 8,
+            min(m_info["mon_y"] + m_info["mon_h"] - 348, int(saved.get("y", default_hy))),
+        )
         
         self.geometry(f"300x300+{int(hx)}+{int(hy)}")
         self.overrideredirect(True)
@@ -4289,6 +4412,7 @@ class BasketballHoop(tk.Toplevel):
         # 拖曳籃框視窗
         self.canvas.bind("<Button-1>", self._on_drag_start)
         self.canvas.bind("<B1-Motion>", self._on_drag_motion)
+        self.canvas.bind("<ButtonRelease-1>", self._on_drag_end)
         
         self.draw_hoop()
         self.animate()
@@ -4298,6 +4422,7 @@ class BasketballHoop(tk.Toplevel):
         if math.hypot(event.x - 260, event.y - 35) < 15:
             self.close_game()
             return
+        self._dragging = True
         self._start_x_root = event.x_root
         self._start_y_root = event.y_root
         self._start_win_x = self.winfo_x()
@@ -4305,13 +4430,23 @@ class BasketballHoop(tk.Toplevel):
 
     def _on_drag_motion(self, event):
         # 如果是關閉按鈕點擊，不進行拖曳
-        if math.hypot(event.x - 260, event.y - 35) < 15:
+        if not getattr(self, "_dragging", False):
             return
         dx = event.x_root - self._start_x_root
         dy = event.y_root - self._start_y_root
         x = self._start_win_x + dx
         y = self._start_win_y + dy
         self.geometry(f"+{int(x)}+{int(y)}")
+
+    def _on_drag_end(self, _event=None):
+        if not getattr(self, "_dragging", False):
+            return
+        self._dragging = False
+        self.monitor.pet_data["basketball_position"] = {
+            "x": self.winfo_x(),
+            "y": self.winfo_y(),
+        }
+        self.monitor.save_pet_savegame()
 
     def draw_hoop(self):
         self.canvas.delete("hoop")

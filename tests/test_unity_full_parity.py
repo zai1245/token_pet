@@ -253,6 +253,35 @@ class UnityFullParityTests(unittest.TestCase):
         self.assertIn("public float dpi", ipc)
         self.assertNotIn("random.random() < 0.00025", monitor)
 
+    def test_status_hud_fits_text_inside_card_at_every_windows_scale(self):
+        hud = (SCRIPTS / "TokenPetStatusHud.cs").read_text(encoding="utf-8")
+        self.assertIn("DrawFittedLabel", hud)
+        self.assertIn("style.CalcSize(content)", hud)
+        self.assertIn("TextClipping.Clip", hud)
+        self.assertIn("cardX = Mathf.Clamp", hud)
+        self.assertIn("cardY = Mathf.Clamp", hud)
+
+    def test_basketball_game_is_rendered_inside_unity_desktop_stage(self):
+        monitor = (ROOT / "emojinoko_monitor.py").read_text(encoding="utf-8")
+        bridge = (ROOT / "unity_renderer_bridge.py").read_text(encoding="utf-8")
+        bootstrap = (SCRIPTS / "TokenPetPocBootstrap.cs").read_text(encoding="utf-8")
+        basketball = (SCRIPTS / "TokenPetBasketballGame.cs").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("class UnityBasketballHoop", monitor)
+        self.assertIn("bridge.show_basketball", monitor)
+        self.assertIn('"command": "show_basketball"', bridge)
+        self.assertIn('case "show_basketball"', bootstrap)
+        self.assertIn("basketballGame.HandlePointer()", bootstrap)
+        self.assertIn("class TokenPetBasketballGame", basketball)
+        self.assertIn('event_name = "basketball_moved"', basketball)
+        self.assertIn('event_name = "basketball_closed"', basketball)
+        self.assertIn("IsDragHandle", basketball)
+        self.assertIn('self.pet_data["basketball_position"]', monitor)
+        self.assertIn('monitor.pet_data.get("basketball_position", {})', monitor)
+        self.assertIn("ComputeThrowVelocity", bootstrap)
+        self.assertIn("throwSamplePositions", bootstrap)
+
     def test_unity_context_menu_keeps_the_complete_legacy_feature_set(self):
         monitor = (ROOT / "emojinoko_monitor.py").read_text(encoding="utf-8")
         start = monitor.index("    def _show_unity_action_menu")

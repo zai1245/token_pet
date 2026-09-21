@@ -11,6 +11,7 @@ if /I "%~1"=="debug" (
     set "TOKENPET_LAUNCH_DEBUG=1"
 )
 if /I "%~1"=="shop" set "TOKENPET_EXTRA_ARGS=--debug-open-shop"
+if /I "%~1"=="basketball" set "TOKENPET_EXTRA_ARGS=--debug-open-basketball"
 
 set "TOKENPET_PYTHON="
 set "TOKENPET_PYTHONW="

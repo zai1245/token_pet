@@ -6,7 +6,7 @@ namespace TokenPet
 {
     public sealed class TokenPetPocBootstrap : MonoBehaviour
     {
-        public const string RendererVersion = "0.8.5-preview";
+        public const string RendererVersion = "0.8.6-preview";
 
         private enum MotionState
         {
@@ -41,6 +41,7 @@ namespace TokenPet
         private TokenPetFloatingText floatingText;
         private TokenPetShopPanel shopPanel;
         private TokenPetFurnitureStage furnitureStage;
+        private TokenPetBasketballGame basketballGame;
         private CircleCollider2D hitCollider;
         private TokenPetIpcClient ipc;
         private TokenPetWindowsOverlay overlay;
@@ -55,6 +56,10 @@ namespace TokenPet
         private Vector2Int dragCursorStart;
         private Vector2Int previousCursorPosition;
         private Vector2 pointerVelocity;
+        private readonly Vector2[] throwSamplePositions = new Vector2[16];
+        private readonly float[] throwSampleTimes = new float[16];
+        private int throwSampleIndex;
+        private int throwSampleCount;
         private int lastDragDirection;
         private int shakeCount;
         private RectInt cachedPetInteractiveRect;
@@ -114,6 +119,8 @@ namespace TokenPet
             floatingText.Initialize(petCamera, overlay);
             furnitureStage = gameObject.AddComponent<TokenPetFurnitureStage>();
             furnitureStage.Initialize(ipc, overlay, petCamera);
+            basketballGame = gameObject.AddComponent<TokenPetBasketballGame>();
+            basketballGame.Initialize(ipc, overlay);
             shopPanel = gameObject.AddComponent<TokenPetShopPanel>();
             shopPanel.Initialize(ipc, rigRoot.gameObject, statusHud, overlay, petCamera);
             StartCoroutine(AnnounceReady());
@@ -282,6 +289,8 @@ namespace TokenPet
         private void HandlePointer()
         {
             bool nativeContextClick = overlay.TryConsumeContextClick(out Vector2Int nativeCursor);
+            if (basketballGame != null && basketballGame.HandlePointer())
+                return;
             if (furnitureStage != null &&
                 furnitureStage.HandlePointer(nativeContextClick, nativeCursor))
                 return;
@@ -310,6 +319,7 @@ namespace TokenPet
                 previousCursorPosition = dragCursorStart;
                 dragWindowStart = overlay.GetPosition();
                 pointerVelocity = Vector2.zero;
+                ResetThrowSamples(dragCursorStart);
                 lastDragDirection = 0;
                 shakeCount = 0;
                 shakeWindowStartedAt = Time.unscaledTime;
@@ -338,6 +348,7 @@ namespace TokenPet
                     pointerVelocity = Vector2.Lerp(pointerVelocity,
                         new Vector2(frameDelta.x, -frameDelta.y) / Mathf.Max(Time.unscaledDeltaTime, 0.001f), 0.35f);
                     previousCursorPosition = cursor;
+                    RecordThrowSample(cursor);
                     TrackShake(frameDelta.x);
                 }
             }
@@ -348,9 +359,10 @@ namespace TokenPet
                 Vector2Int windowPosition = overlay.GetPosition();
                 if (pointerDragged)
                 {
+                    Vector2 releaseVelocity = ComputeThrowVelocity(overlay.GetCursorPosition());
                     airborneVelocity = new Vector2(
-                        Mathf.Clamp(pointerVelocity.x * 0.0007f, -2.4f, 2.4f),
-                        Mathf.Clamp(pointerVelocity.y * 0.0007f + 1.5f, 0.8f, 3.2f));
+                        Mathf.Clamp(releaseVelocity.x * 0.0007f, -2.4f, 2.4f),
+                        Mathf.Clamp(releaseVelocity.y * 0.0007f + 1.5f, 0.8f, 3.2f));
                     EnterState(MotionState.Airborne);
                     externallyDriven = ipc != null && ipc.IsConnected;
                     ipc.Send(new RendererEvent
@@ -360,8 +372,8 @@ namespace TokenPet
                         x = windowPosition.x,
                         y = windowPosition.y,
                         floor_y = overlay.GetPetWorkArea().yMax - (int)LegacyCanvasHeight,
-                        velocity_x = pointerVelocity.x,
-                        velocity_y = pointerVelocity.y
+                        velocity_x = releaseVelocity.x,
+                        velocity_y = releaseVelocity.y
                     });
                 }
                 else
@@ -379,6 +391,53 @@ namespace TokenPet
                     }
                 }
             }
+        }
+
+        private void ResetThrowSamples(Vector2Int cursor)
+        {
+            throwSampleIndex = 0;
+            throwSampleCount = 1;
+            throwSamplePositions[0] = cursor;
+            throwSampleTimes[0] = Time.unscaledTime;
+        }
+
+        private void RecordThrowSample(Vector2Int cursor)
+        {
+            throwSampleIndex = (throwSampleIndex + 1) % throwSamplePositions.Length;
+            throwSamplePositions[throwSampleIndex] = cursor;
+            throwSampleTimes[throwSampleIndex] = Time.unscaledTime;
+            throwSampleCount = Mathf.Min(throwSampleCount + 1, throwSamplePositions.Length);
+        }
+
+        private Vector2 ComputeThrowVelocity(Vector2Int releaseCursor)
+        {
+            RecordThrowSample(releaseCursor);
+            float now = Time.unscaledTime;
+            Vector2 release = releaseCursor;
+            Vector2 chosen = release;
+            float chosenTime = now;
+            bool foundMotion = false;
+            for (int offset = 1; offset < throwSampleCount; offset++)
+            {
+                int index = (throwSampleIndex - offset + throwSamplePositions.Length) %
+                    throwSamplePositions.Length;
+                float age = now - throwSampleTimes[index];
+                if (age > 0.16f)
+                    break;
+                Vector2 delta = release - throwSamplePositions[index];
+                if (delta.sqrMagnitude < 4f)
+                    continue;
+                chosen = throwSamplePositions[index];
+                chosenTime = throwSampleTimes[index];
+                foundMotion = true;
+            }
+
+            if (!foundMotion)
+                return Vector2.zero;
+            float elapsed = Mathf.Max(0.016f, now - chosenTime);
+            Vector2 desktopVelocity = (release - chosen) / elapsed;
+            // Desktop Y grows downward; the IPC contract uses screen-up positive.
+            return new Vector2(desktopVelocity.x, -desktopVelocity.y);
         }
 
         private void PublishCursorPosition()
@@ -766,6 +825,8 @@ namespace TokenPet
                 return true;
             if (furnitureStage != null && furnitureStage.HitTestDesktop(cursor))
                 return true;
+            if (basketballGame != null && basketballGame.HitTestDesktop(cursor))
+                return true;
             return cachedPetInteractiveRect.Contains(cursor);
         }
 
@@ -888,6 +949,15 @@ namespace TokenPet
                     break;
                 case "trigger_furniture":
                     furnitureStage.Trigger(command.item, command.action);
+                    break;
+                case "show_basketball":
+                    basketballGame.Show(Mathf.RoundToInt(command.x), Mathf.RoundToInt(command.y));
+                    break;
+                case "hide_basketball":
+                    basketballGame.Hide();
+                    break;
+                case "basketball_goal":
+                    basketballGame.TriggerGoal();
                     break;
             }
         }

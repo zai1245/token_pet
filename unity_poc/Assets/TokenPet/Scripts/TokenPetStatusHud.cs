@@ -88,26 +88,28 @@ namespace TokenPet
                 cardX = overlay.PetPosition.x - overlay.StageOrigin.x + 44f;
                 cardY = overlay.PetPosition.y - overlay.StageOrigin.y + 260f;
             }
+            cardX = Mathf.Clamp(cardX, 2f, Mathf.Max(2f, Screen.width - cardWidth - 2f));
+            cardY = Mathf.Clamp(cardY, 2f, Mathf.Max(2f, Screen.height - cardHeight - 2f));
 
             // A small warm tag instead of the old detached 340x45 dark window.
             GUI.DrawTexture(new Rect(cardX, cardY, cardWidth, cardHeight), outlineTexture);
             GUI.DrawTexture(new Rect(cardX + 2f, cardY + 2f, cardWidth - 4f, cardHeight - 4f), creamTexture);
 
-            GUI.Label(new Rect(cardX + 12f, cardY + 4f, 44f, 18f), $"Lv.{level}", mainLabel);
-            GUI.Label(new Rect(cardX + 12f, cardY + 21f, 24f, 12f), "XP", smallLabel);
+            DrawFittedLabel(new Rect(cardX + 12f, cardY + 4f, 74f, 18f), $"Lv.{level}", mainLabel, 7);
+            DrawFittedLabel(new Rect(cardX + 12f, cardY + 21f, 24f, 12f), "XP", smallLabel, 5);
             DrawBar(new Rect(cardX + 36f, cardY + 25f, 54f, 6f),
                 Mathf.Clamp01(xp / xpMax), xpTexture);
 
             Texture2D currentFoodTexture = satiety <= 20f ? hungryTexture : foodTexture;
             GUI.DrawTexture(new Rect(cardX + 104f, cardY + 8f, 9f, 9f), currentFoodTexture);
-            GUI.Label(new Rect(cardX + 117f, cardY + 3f, 48f, 18f), $"{satiety:0}%", mainLabel);
-            GUI.Label(new Rect(cardX + 104f, cardY + 21f, 32f, 12f), "FULL", smallLabel);
+            DrawFittedLabel(new Rect(cardX + 117f, cardY + 3f, 58f, 18f), $"{satiety:0}%", mainLabel, 7);
+            DrawFittedLabel(new Rect(cardX + 104f, cardY + 21f, 32f, 12f), "FULL", smallLabel, 5);
             DrawBar(new Rect(cardX + 136f, cardY + 25f, 42f, 6f),
                 satiety / 100f, currentFoodTexture);
 
             GUI.DrawTexture(new Rect(cardX + 192f, cardY + 10f, 10f, 10f), coinTexture);
-            GUI.Label(new Rect(cardX + 207f, cardY + 5f, 38f, 18f), FormatCoins(coins), mainLabel);
-            GUI.Label(new Rect(cardX + 192f, cardY + 22f, 48f, 11f), "COINS", smallLabel);
+            DrawFittedLabel(new Rect(cardX + 207f, cardY + 5f, 38f, 18f), FormatCoins(coins), mainLabel, 6);
+            DrawFittedLabel(new Rect(cardX + 192f, cardY + 22f, 48f, 11f), "COINS", smallLabel, 5);
         }
 
         private void DrawBar(Rect rect, float ratio, Texture2D fill)
@@ -116,6 +118,25 @@ namespace TokenPet
             float innerWidth = Mathf.Max(0f, (rect.width - 2f) * Mathf.Clamp01(ratio));
             if (innerWidth > 0f)
                 GUI.DrawTexture(new Rect(rect.x + 1f, rect.y + 1f, innerWidth, rect.height - 2f), fill);
+        }
+
+        private static void DrawFittedLabel(
+            Rect rect, string text, GUIStyle style, int minimumFontSize)
+        {
+            int originalFontSize = style.fontSize;
+            TextClipping originalClipping = style.clipping;
+            style.clipping = TextClipping.Clip;
+            GUIContent content = new(text);
+            while (style.fontSize > minimumFontSize)
+            {
+                Vector2 size = style.CalcSize(content);
+                if (size.x <= rect.width && size.y <= rect.height)
+                    break;
+                style.fontSize--;
+            }
+            GUI.Label(rect, content, style);
+            style.fontSize = originalFontSize;
+            style.clipping = originalClipping;
         }
 
         private void EnsureStyles()
@@ -131,6 +152,8 @@ namespace TokenPet
                 alignment = TextAnchor.MiddleLeft,
                 fontSize = 11,
                 fontStyle = FontStyle.Bold,
+                clipping = TextClipping.Clip,
+                wordWrap = false,
                 font = uiFont,
                 normal = { textColor = Outline }
             };

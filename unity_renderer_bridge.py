@@ -285,6 +285,22 @@ class UnityRendererBridge:
             }
         )
 
+    def show_basketball(self, x: int, y: int) -> bool:
+        """Render the legacy basketball hoop inside the Unity desktop stage."""
+        return self.send(
+            {
+                "command": "show_basketball",
+                "x": int(x),
+                "y": int(y),
+            }
+        )
+
+    def hide_basketball(self) -> bool:
+        return self.send({"command": "hide_basketball"})
+
+    def basketball_goal(self) -> bool:
+        return self.send({"command": "basketball_goal"})
+
     def poll_events(self) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
         with self._events_lock:

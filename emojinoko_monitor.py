@@ -48,11 +48,13 @@ def time_ms():
 def map_unity_throw_velocity(pointer_vx, desktop_vy):
     """Convert DPI-aware pointer pixels/second into desktop physics/frame."""
     speed = math.hypot(pointer_vx, desktop_vy)
-    if speed < 110.0:
+    if speed < 80.0:
         return 0.0, 1.5, speed
-    impulse_scale = 0.022
-    fall_vx = max(-24.0, min(24.0, pointer_vx * impulse_scale))
-    fall_vy = max(-32.0, min(20.0, desktop_vy * impulse_scale))
+    # Preserve the hand's release velocity. The old long-window average and
+    # strong per-frame drag made throws feel as if they were moving through oil.
+    impulse_scale = 0.024
+    fall_vx = max(-28.0, min(28.0, pointer_vx * impulse_scale))
+    fall_vy = max(-36.0, min(22.0, desktop_vy * impulse_scale))
     return fall_vx, fall_vy, speed
 
 
@@ -292,6 +294,10 @@ class EmojinokoMonitor:
         
         # 數據快取與同步旗標
         self.monthly_price_str = "陪你上班" if self.STANDALONE else "$0.00 USD"
+        # Keep the latest month-to-date counters available before the first
+        # refresh so Unity can render meaningful Token usage immediately.
+        self.monthly_prompt_tokens = int(self.pet_data.get("last_prompt_baseline", 0) or 0)
+        self.monthly_complete_tokens = int(self.pet_data.get("last_complete_baseline", 0) or 0)
         self.is_fetching = False
         self.is_manual_refresh = False
         self.basketball_hoop = None  # 投籃小遊戲視窗
@@ -748,7 +754,8 @@ class EmojinokoMonitor:
         # while capping wild focus/DPI spikes. A gentle release still falls.
         self._fall_vx = fall_vx
         self._fall_vy = fall_vy
-        self._fall_gravity = 0.85
+        self._fall_gravity = 0.78
+        self._fall_air_drag = 0.998
         self._unity_fall_started_at = time.monotonic()
         self._unity_floor_bounced = False
         self.pet.roll_angle = 0.0
@@ -798,6 +805,7 @@ class EmojinokoMonitor:
                 self._fall_vx = 0.0
                 self._fall_vy = 1.0
                 self._fall_gravity = 1.05
+                self._fall_air_drag = 0.995
                 self._fall_peak_y = float(self._physics_win_y)
                 self._unity_fall_started_at = time.monotonic()
                 self._unity_floor_bounced = True
@@ -864,6 +872,8 @@ class EmojinokoMonitor:
             xp_max=PET_XP_THRESHOLD + (level - 1) * 50.0,
             satiety=self.pet_data.get("satiety", 100.0),
             coins=self.pet_data.get("coins", 0),
+            prompt_tokens=self.monthly_prompt_tokens,
+            complete_tokens=self.monthly_complete_tokens,
             eat_type=getattr(self.pet, "eat_type", ""),
             furniture=(getattr(self, "current_furniture_snapped", "") or
                        (getattr(self, "target_furniture_id", "")
@@ -1237,6 +1247,22 @@ class EmojinokoMonitor:
                 self.pet.state = "idle"
                 self.pet.roll_angle = 0.0
 
+        # Use elapsed time rather than assuming Tk always wakes at exactly
+        # 16 ms. This keeps the arc smooth when Windows briefly delays a frame.
+        physics_now = time.monotonic()
+        physics_state = self.pet.state
+        active_fall_states = ("fall", "backflip")
+        if physics_state in active_fall_states:
+            if getattr(self, "_fall_tick_state", "") in active_fall_states:
+                elapsed = physics_now - getattr(self, "_fall_last_tick", physics_now)
+                fall_frame_scale = max(0.35, min(2.5, elapsed * 60.0))
+            else:
+                fall_frame_scale = 1.0
+            self._fall_last_tick = physics_now
+        else:
+            fall_frame_scale = 1.0
+        self._fall_tick_state = physics_state
+
         # 處理高空自由落體與拋體物理 (支援下墜、橫向拋飛反彈與後空翻)
         if self.pet.state in ("fall", "backflip"):
             m_info = self.get_current_monitor_info()
@@ -1255,12 +1281,17 @@ class EmojinokoMonitor:
             # 追蹤本次墜落期間的最高空位置 (Y 軸越小代表越高)
             self._fall_peak_y = min(getattr(self, "_fall_peak_y", current_y), current_y)
             
-            # 累加重力加速度與摩擦力衰減
-            self._fall_vy = getattr(self, "_fall_vy", 0.0) + getattr(self, "_fall_gravity", 0.8)
-            self._fall_vx = getattr(self, "_fall_vx", 0.0) * 0.985
+            # Time-correct gravity and near-lossless air movement. Surface
+            # impacts still provide the visible squash/bounce deceleration.
+            self._fall_vy = (
+                getattr(self, "_fall_vy", 0.0)
+                + getattr(self, "_fall_gravity", 0.8) * fall_frame_scale
+            )
+            air_drag = getattr(self, "_fall_air_drag", 0.995)
+            self._fall_vx = getattr(self, "_fall_vx", 0.0) * (air_drag ** fall_frame_scale)
             
-            new_y = current_y + self._fall_vy
-            new_x = current_x + self._fall_vx
+            new_y = current_y + self._fall_vy * fall_frame_scale
+            new_x = current_x + self._fall_vx * fall_frame_scale
             
             # 🤸 處理彈簧床空中 360 度特技翻滾
             if getattr(self, "air_roll_timer", 0) > 0:
@@ -2216,6 +2247,8 @@ class EmojinokoMonitor:
         total_price = sum(item.get("price", 0.0) for item in usage_data)
         total_prompt = sum(item.get("prompt_tokens", 0) for item in usage_data)
         total_complete = sum(item.get("complete_tokens", 0) for item in usage_data)
+        self.monthly_prompt_tokens = int(total_prompt)
+        self.monthly_complete_tokens = int(total_complete)
         
         twd = total_price * 32.0
         self.monthly_price_str = f"${total_price:.2f} USD (≈NT${twd:.0f})"
@@ -2766,6 +2799,7 @@ class EmojinokoMonitor:
                     self._fall_vx = vx * 0.016
                     self._fall_vy = vy * 0.016
                     self._fall_gravity = 0.8
+                    self._fall_air_drag = 0.995
                     self.create_text_popup("⭐後空翻!!⭐", 170, 120, color=YELLOW_COLOR)
                 else:
                     # 橫向或向下高速甩動：飛滾彈跳
@@ -2779,6 +2813,7 @@ class EmojinokoMonitor:
                     self._fall_vx = vx * 0.016
                     self._fall_vy = vy * 0.016
                     self._fall_gravity = 0.8
+                    self._fall_air_drag = 0.995
                     self.create_text_popup("滾滾滾～", 170, 120, color=ACCENT_COLOR)
             else:
                 # 判定是否處於高空以啟動自由落體 (支援多螢幕)
@@ -2790,6 +2825,7 @@ class EmojinokoMonitor:
                     self._fall_vx = vx * 0.016
                     self._fall_vy = vy * 0.016
                     self._fall_gravity = 0.8
+                    self._fall_air_drag = 0.995
                     self.pet.roll_speed = max(-0.1, min(0.1, vx * 0.0004))
                     self.create_text_popup("哇哇哇～", 170, 120, color=PINK_COLOR)
         else:
@@ -2974,6 +3010,7 @@ class EmojinokoMonitor:
             ("💰  查看目前費用", self.show_current_cost),
             ("📊  詳細 Token 統計", self.open_detailed_stats),
             (f"📋  {status_label}資訊看板", self._toggle_unity_status_hud),
+            (f"⬇  檢查／下載更新 ({CURRENT_VERSION})", self.trigger_manual_update_check),
             ("☕  請喝咖啡 (30 🪙)", self.buy_coffee),
             ("✊  玩猜拳 (5 🪙)", self.play_rps),
             ("🏀  投籃小遊戲", self.toggle_basketball_game),
@@ -2983,7 +3020,6 @@ class EmojinokoMonitor:
             ("📝  新增便利貼", self.add_new_memo),
             ("↩  回復便利貼", lambda: self._show_deleted_memos_menu(x_root, y_root)),
             ("⌨  快速鍵設定", self.open_hotkey_settings),
-            ("🔄  檢查更新", self.trigger_manual_update_check),
         ]
         if not self.STANDALONE:
             common.insert(1, ("↻  立即對帳", self.manual_refresh))
@@ -4978,9 +5014,10 @@ class TokenPetActionMenu(tk.Toplevel):
             row = index % rows
             column = index // rows
             is_exit = "退出寵物" in label
-            button_bg = "#ffe1d5" if is_exit else self.BG
-            button_fg = "#a33a2b" if is_exit else self.TEXT
-            button_hover = "#ffc9b8" if is_exit else self.HOVER
+            is_update = "檢查／下載更新" in label
+            button_bg = "#ffe1d5" if is_exit else ("#dceeff" if is_update else self.BG)
+            button_fg = "#a33a2b" if is_exit else ("#24548a" if is_update else self.TEXT)
+            button_hover = "#ffc9b8" if is_exit else ("#bcdcff" if is_update else self.HOVER)
             button = tk.Label(
                 grid,
                 text=label,
@@ -4989,7 +5026,7 @@ class TokenPetActionMenu(tk.Toplevel):
                 anchor="w",
                 padx=7,
                 cursor="hand2",
-                font=("Microsoft JhengHei UI", 8, "bold" if is_exit else "normal"),
+                font=("Microsoft JhengHei UI", 8, "bold" if (is_exit or is_update) else "normal"),
             )
             button.grid(
                 row=row,

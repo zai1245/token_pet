@@ -60,6 +60,8 @@ class UnityRendererBridgeTests(unittest.TestCase):
             "xp_max": 200.0,
             "satiety": 72.5,
             "coins": 44,
+            "prompt_tokens": 123456,
+            "complete_tokens": 6543,
         }
         self.assertTrue(bridge.send_snapshot(**kwargs))
         self.assertTrue(bridge.send_snapshot(**kwargs))
@@ -69,6 +71,8 @@ class UnityRendererBridgeTests(unittest.TestCase):
         self.assertIn(b'"mouth":"open"', recording_socket.messages[0])
         self.assertIn(b'"satiety":72.5', recording_socket.messages[0])
         self.assertIn(b'"coins":44', recording_socket.messages[0])
+        self.assertIn(b'"prompt_tokens":123456', recording_socket.messages[0])
+        self.assertIn(b'"complete_tokens":6543', recording_socket.messages[0])
 
     def test_desktop_motion_and_popups_are_forwarded_to_unity(self):
         bridge = UnityRendererBridge("unused.exe")
@@ -93,7 +97,9 @@ class UnityRendererBridgeTests(unittest.TestCase):
         self.assertIn('self.pet.state = "backflip"', source)
         self.assertIn('self.pet.state = "fall"', source)
         self.assertIn("map_unity_throw_velocity(vx, vy)", source)
-        self.assertIn("self._fall_gravity = 0.85", source)
+        self.assertIn("self._fall_gravity = 0.78", source)
+        self.assertIn("self._fall_air_drag = 0.998", source)
+        self.assertIn("fall_frame_scale", source)
         self.assertIn("self._unity_floor_bounced = False", source)
         self.assertIn("def _apply_unity_desktop_metrics", source)
         self.assertIn('event_name == "desktop_metrics"', source)

@@ -31,6 +31,8 @@ namespace TokenPet
         public float xp_max = 100f;
         public float satiety = 100f;
         public int coins;
+        public long prompt_tokens;
+        public long complete_tokens;
         public string eat_type;
         public string furniture;
         public string effects;

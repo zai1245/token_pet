@@ -6,7 +6,7 @@ namespace TokenPet
 {
     public sealed class TokenPetPocBootstrap : MonoBehaviour
     {
-        public const string RendererVersion = "0.8.6-preview";
+        public const string RendererVersion = "0.8.7-preview";
 
         private enum MotionState
         {
@@ -413,29 +413,39 @@ namespace TokenPet
         {
             RecordThrowSample(releaseCursor);
             float now = Time.unscaledTime;
-            Vector2 release = releaseCursor;
-            Vector2 chosen = release;
-            float chosenTime = now;
-            bool foundMotion = false;
-            for (int offset = 1; offset < throwSampleCount; offset++)
+            const float sampleWindow = 0.10f;
+            Vector2 weightedVelocity = Vector2.zero;
+            float totalWeight = 0f;
+
+            // Average recent per-frame velocities with a strong recency bias.
+            // This removes event jitter without diluting the final flick with
+            // the slower first half of a long drag.
+            for (int offset = 0; offset < throwSampleCount - 1; offset++)
             {
-                int index = (throwSampleIndex - offset + throwSamplePositions.Length) %
+                int newerIndex = (throwSampleIndex - offset + throwSamplePositions.Length) %
                     throwSamplePositions.Length;
-                float age = now - throwSampleTimes[index];
-                if (age > 0.16f)
+                int olderIndex = (throwSampleIndex - offset - 1 + throwSamplePositions.Length) %
+                    throwSamplePositions.Length;
+                float age = now - throwSampleTimes[olderIndex];
+                if (age > sampleWindow)
                     break;
-                Vector2 delta = release - throwSamplePositions[index];
-                if (delta.sqrMagnitude < 4f)
+                float elapsed = throwSampleTimes[newerIndex] - throwSampleTimes[olderIndex];
+                if (elapsed < 0.002f)
                     continue;
-                chosen = throwSamplePositions[index];
-                chosenTime = throwSampleTimes[index];
-                foundMotion = true;
+                Vector2 delta = throwSamplePositions[newerIndex] - throwSamplePositions[olderIndex];
+                if (delta.sqrMagnitude < 0.25f)
+                    continue;
+
+                Vector2 segmentVelocity = delta / elapsed;
+                float recency = Mathf.Lerp(3.0f, 1.0f, Mathf.Clamp01(age / sampleWindow));
+                float weight = recency * elapsed;
+                weightedVelocity += segmentVelocity * weight;
+                totalWeight += weight;
             }
 
-            if (!foundMotion)
+            if (totalWeight <= 0.0001f)
                 return Vector2.zero;
-            float elapsed = Mathf.Max(0.016f, now - chosenTime);
-            Vector2 desktopVelocity = (release - chosen) / elapsed;
+            Vector2 desktopVelocity = weightedVelocity / totalWeight;
             // Desktop Y grows downward; the IPC contract uses screen-up positive.
             return new Vector2(desktopVelocity.x, -desktopVelocity.y);
         }
@@ -906,7 +916,9 @@ namespace TokenPet
                         command.xp,
                         command.xp_max,
                         command.satiety,
-                        command.coins);
+                        command.coins,
+                        command.prompt_tokens,
+                        command.complete_tokens);
                     break;
                 case "trigger":
                     if (string.Equals(command.action, "poke", StringComparison.OrdinalIgnoreCase))

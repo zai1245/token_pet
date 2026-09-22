@@ -255,11 +255,19 @@ class UnityFullParityTests(unittest.TestCase):
 
     def test_status_hud_fits_text_inside_card_at_every_windows_scale(self):
         hud = (SCRIPTS / "TokenPetStatusHud.cs").read_text(encoding="utf-8")
+        monitor = (ROOT / "emojinoko_monitor.py").read_text(encoding="utf-8")
+        bridge = (ROOT / "unity_renderer_bridge.py").read_text(encoding="utf-8")
+        ipc = (SCRIPTS / "TokenPetIpcClient.cs").read_text(encoding="utf-8")
         self.assertIn("DrawFittedLabel", hud)
         self.assertIn("style.CalcSize(content)", hud)
         self.assertIn("TextClipping.Clip", hud)
         self.assertIn("cardX = Mathf.Clamp", hud)
         self.assertIn("cardY = Mathf.Clamp", hud)
+        self.assertIn("tokenTotal", hud)
+        self.assertIn('"TOKENS"', hud)
+        self.assertIn("prompt_tokens=self.monthly_prompt_tokens", monitor)
+        self.assertIn('"prompt_tokens": max(0, int(prompt_tokens))', bridge)
+        self.assertIn("public long prompt_tokens", ipc)
 
     def test_basketball_game_is_rendered_inside_unity_desktop_stage(self):
         monitor = (ROOT / "emojinoko_monitor.py").read_text(encoding="utf-8")
@@ -315,6 +323,7 @@ class UnityFullParityTests(unittest.TestCase):
         mode_gate = menu.index("if not self.STANDALONE:")
         self.assertLess(menu.index("self.show_current_cost"), mode_gate)
         self.assertLess(menu.index("self.open_detailed_stats"), mode_gate)
+        self.assertLess(menu.index("self.trigger_manual_update_check"), menu.index("self.buy_coffee"))
 
     def test_face_textures_do_not_change_mip_level_across_windows_dpi(self):
         resources = ROOT / "unity_poc" / "Assets" / "TokenPet" / "Resources"

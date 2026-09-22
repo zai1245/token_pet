@@ -17,12 +17,14 @@ namespace TokenPet
         private static readonly Color32 FoodFill = new(115, 183, 91, 255);
         private static readonly Color32 HungryFill = new(240, 105, 91, 255);
         private static readonly Color32 CoinFill = new(255, 196, 54, 255);
+        private static readonly Color32 TokenFill = new(88, 142, 214, 255);
 
         private int level = 1;
         private float xp;
         private float xpMax = 100f;
         private float satiety = 100f;
         private int coins;
+        private long tokenTotal;
         private bool isVisible = true;
         private GUIStyle mainLabel;
         private GUIStyle smallLabel;
@@ -34,6 +36,7 @@ namespace TokenPet
         private Texture2D foodTexture;
         private Texture2D hungryTexture;
         private Texture2D coinTexture;
+        private Texture2D tokenTexture;
         private TokenPetWindowsOverlay overlay;
 
         public bool IsVisible => isVisible;
@@ -44,13 +47,14 @@ namespace TokenPet
         }
 
         public void SetStatus(int nextLevel, float nextXp, float nextXpMax,
-            float nextSatiety, int nextCoins)
+            float nextSatiety, int nextCoins, long promptTokens, long completeTokens)
         {
             level = Mathf.Max(1, nextLevel);
             xp = Mathf.Max(0f, nextXp);
             xpMax = Mathf.Max(1f, nextXpMax);
             satiety = Mathf.Clamp(nextSatiety, 0f, 100f);
             coins = Mathf.Max(0, nextCoins);
+            tokenTotal = System.Math.Max(0L, promptTokens) + System.Math.Max(0L, completeTokens);
         }
 
         public void SetVisible(bool visible)
@@ -67,6 +71,7 @@ namespace TokenPet
             foodTexture = MakeTexture(FoodFill);
             hungryTexture = MakeTexture(HungryFill);
             coinTexture = MakeTexture(CoinFill);
+            tokenTexture = MakeTexture(TokenFill);
         }
 
         private void OnGUI()
@@ -76,7 +81,7 @@ namespace TokenPet
 
             EnsureStyles();
 
-            const float cardWidth = 252f;
+            const float cardWidth = 332f;
             const float cardHeight = 38f;
             float cardX = Mathf.Round((Screen.width - cardWidth) * 0.5f);
             // Keep the centre/top of the transparent surface clear for the pet,
@@ -85,7 +90,7 @@ namespace TokenPet
             float cardY = Screen.height - cardHeight - 2f;
             if (overlay != null && overlay.IsDesktopStage)
             {
-                cardX = overlay.PetPosition.x - overlay.StageOrigin.x + 44f;
+                cardX = overlay.PetPosition.x - overlay.StageOrigin.x + 4f;
                 cardY = overlay.PetPosition.y - overlay.StageOrigin.y + 260f;
             }
             cardX = Mathf.Clamp(cardX, 2f, Mathf.Max(2f, Screen.width - cardWidth - 2f));
@@ -95,21 +100,27 @@ namespace TokenPet
             GUI.DrawTexture(new Rect(cardX, cardY, cardWidth, cardHeight), outlineTexture);
             GUI.DrawTexture(new Rect(cardX + 2f, cardY + 2f, cardWidth - 4f, cardHeight - 4f), creamTexture);
 
-            DrawFittedLabel(new Rect(cardX + 12f, cardY + 4f, 74f, 18f), $"Lv.{level}", mainLabel, 7);
-            DrawFittedLabel(new Rect(cardX + 12f, cardY + 21f, 24f, 12f), "XP", smallLabel, 5);
-            DrawBar(new Rect(cardX + 36f, cardY + 25f, 54f, 6f),
+            DrawFittedLabel(new Rect(cardX + 10f, cardY + 4f, 72f, 18f), $"Lv.{level}", mainLabel, 7);
+            DrawFittedLabel(new Rect(cardX + 10f, cardY + 21f, 20f, 12f), "XP", smallLabel, 5);
+            DrawBar(new Rect(cardX + 30f, cardY + 25f, 52f, 6f),
                 Mathf.Clamp01(xp / xpMax), xpTexture);
 
             Texture2D currentFoodTexture = satiety <= 20f ? hungryTexture : foodTexture;
-            GUI.DrawTexture(new Rect(cardX + 104f, cardY + 8f, 9f, 9f), currentFoodTexture);
-            DrawFittedLabel(new Rect(cardX + 117f, cardY + 3f, 58f, 18f), $"{satiety:0}%", mainLabel, 7);
-            DrawFittedLabel(new Rect(cardX + 104f, cardY + 21f, 32f, 12f), "FULL", smallLabel, 5);
-            DrawBar(new Rect(cardX + 136f, cardY + 25f, 42f, 6f),
+            GUI.DrawTexture(new Rect(cardX + 91f, cardY + 8f, 9f, 9f), currentFoodTexture);
+            DrawFittedLabel(new Rect(cardX + 104f, cardY + 3f, 48f, 18f), $"{satiety:0}%", mainLabel, 7);
+            DrawFittedLabel(new Rect(cardX + 91f, cardY + 21f, 29f, 12f), "FULL", smallLabel, 5);
+            DrawBar(new Rect(cardX + 120f, cardY + 25f, 37f, 6f),
                 satiety / 100f, currentFoodTexture);
 
-            GUI.DrawTexture(new Rect(cardX + 192f, cardY + 10f, 10f, 10f), coinTexture);
-            DrawFittedLabel(new Rect(cardX + 207f, cardY + 5f, 38f, 18f), FormatCoins(coins), mainLabel, 6);
-            DrawFittedLabel(new Rect(cardX + 192f, cardY + 22f, 48f, 11f), "COINS", smallLabel, 5);
+            // Token usage is the product's primary metric, so it receives the
+            // widest field and is always visible alongside the pet stats.
+            GUI.DrawTexture(new Rect(cardX + 166f, cardY + 9f, 10f, 10f), tokenTexture);
+            DrawFittedLabel(new Rect(cardX + 181f, cardY + 4f, 68f, 18f), FormatMetric(tokenTotal), mainLabel, 6);
+            DrawFittedLabel(new Rect(cardX + 166f, cardY + 22f, 75f, 11f), "TOKENS", smallLabel, 5);
+
+            GUI.DrawTexture(new Rect(cardX + 260f, cardY + 9f, 10f, 10f), coinTexture);
+            DrawFittedLabel(new Rect(cardX + 275f, cardY + 4f, 49f, 18f), FormatMetric(coins), mainLabel, 6);
+            DrawFittedLabel(new Rect(cardX + 260f, cardY + 22f, 58f, 11f), "COINS", smallLabel, 5);
         }
 
         private void DrawBar(Rect rect, float ratio, Texture2D fill)
@@ -164,8 +175,10 @@ namespace TokenPet
             };
         }
 
-        private static string FormatCoins(int value)
+        private static string FormatMetric(long value)
         {
+            if (value >= 1000000000)
+                return $"{value / 1000000000f:0.#}b";
             if (value >= 1000000)
                 return $"{value / 1000000f:0.#}m";
             if (value >= 1000)
@@ -204,6 +217,8 @@ namespace TokenPet
                 Destroy(hungryTexture);
             if (coinTexture != null)
                 Destroy(coinTexture);
+            if (tokenTexture != null)
+                Destroy(tokenTexture);
         }
     }
 }

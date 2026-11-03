@@ -15,6 +15,8 @@
 前往 [GitHub Releases](https://github.com/zai1245/token_pet/releases)，在最新版本的
 **Assets** 下載 `TokenPetIntegrated-...zip`，解壓後執行 `run_unity_preview.cmd`。
 請勿單獨啟動 `TokenPetUnity.exe`；完整右鍵選單與遊戲系統需要 Python bridge。
+啟動器預設登入公司 chatbot，並在狀態列顯示本月累積費用（USD）。
+純離線測試可執行 `run_unity_preview.cmd offline`，此模式不會同步公司用量。
 維護者發佈流程見 [`GITHUB_RELEASES.md`](GITHUB_RELEASES.md)。
 
 ---

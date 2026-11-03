@@ -55,9 +55,9 @@ class UnityExpressionRigTests(unittest.TestCase):
         bootstrap = BOOTSTRAP_SOURCE.read_text(encoding="utf-8")
         hud = STATUS_HUD_SOURCE.read_text(encoding="utf-8")
         self.assertIn("TokenPetStatusHud statusHud", bootstrap)
-        self.assertIn("statusHud.SetStatus", bootstrap)
+        self.assertIn("statusHud.SetUsage", bootstrap)
         self.assertIn("void OnGUI()", hud)
-        self.assertIn("satiety <= 20f", hud)
+        self.assertIn('"本月費用"', hud)
 
     def test_canvas_expression_contract_is_consumed(self):
         bootstrap = BOOTSTRAP_SOURCE.read_text(encoding="utf-8")

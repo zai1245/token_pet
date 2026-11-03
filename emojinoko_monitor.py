@@ -22,7 +22,7 @@ from usage_widget import (
     load_credentials, delete_credentials, LoginWindow,
     OPENWEBUI_BASE_URL, WINDOW_BG, TEXT_COLOR, ACCENT_COLOR,
     PINK_COLOR, YELLOW_COLOR, GREEN_COLOR, TITLE_COLOR,
-    IS_WINDOWS, HotkeyManager, _encode, _decode
+    IS_WINDOWS, HotkeyManager, _encode, _decode, _request_with_retry
 )
 
 # 匯入我們開發的遊戲引擎與繪圖模組
@@ -294,6 +294,8 @@ class EmojinokoMonitor:
         
         # 數據快取與同步旗標
         self.monthly_price_str = "陪你上班" if self.STANDALONE else "$0.00 USD"
+        self.monthly_cost_usd = 0.0
+        self.usage_status = "offline" if self.STANDALONE else "loading"
         # Keep the latest month-to-date counters available before the first
         # refresh so Unity can render meaningful Token usage immediately.
         self.monthly_prompt_tokens = int(self.pet_data.get("last_prompt_baseline", 0) or 0)
@@ -874,6 +876,8 @@ class EmojinokoMonitor:
             coins=self.pet_data.get("coins", 0),
             prompt_tokens=self.monthly_prompt_tokens,
             complete_tokens=self.monthly_complete_tokens,
+            cost_usd=self.monthly_cost_usd,
+            usage_status=self.usage_status,
             eat_type=getattr(self.pet, "eat_type", ""),
             furniture=(getattr(self, "current_furniture_snapped", "") or
                        (getattr(self, "target_furniture_id", "")
@@ -2108,10 +2112,13 @@ class EmojinokoMonitor:
 
     def _show_fetch_error(self, err_type):
         """對帳連線失敗時顯示紅色漂浮文字"""
+        self.usage_status = "error"
         self.create_text_popup(f"❌ {err_type}", 170, 120, color=PINK_COLOR)
 
     def simulate_usage(self):
         """模擬用量增加，用於離線/外網環境下測試地瓜球餵食與產幣"""
+        if not self.STANDALONE:
+            return
         # 模擬 Prompt Token 增加 1500，Completion Token 增加 800
         fake_prompt = self.pet_data.get("last_prompt_baseline", 0) + 1500
         fake_complete = self.pet_data.get("last_complete_baseline", 0) + 800
@@ -2208,14 +2215,21 @@ class EmojinokoMonitor:
             }
             cookies = {"token": self.TOKEN}
 
-            # 刷新快取
-            requests.get(f"{OPENWEBUI_BASE_URL}/api/usage", headers=headers, cookies=cookies, timeout=8)
+            # Match the statistics panel: cache refresh is best-effort and the
+            # monthly endpoint commonly takes 12-15 seconds to respond.
+            try:
+                _request_with_retry(
+                    "get", f"{OPENWEBUI_BASE_URL}/api/usage",
+                    headers=headers, cookies=cookies, timeout=10,
+                )
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+                pass
             
             # 獲取本月數據
-            r = requests.post(
-                f"{OPENWEBUI_BASE_URL}/api/v1/phison/user/usage/monthly",
+            r = _request_with_retry(
+                "post", f"{OPENWEBUI_BASE_URL}/api/v1/phison/user/usage/monthly",
                 headers=headers, cookies=cookies,
-                json={"key": self.PHISON_TOKEN}, timeout=10
+                json={"key": self.PHISON_TOKEN}, timeout=30
             )
 
             # Token 過期自動重新登入
@@ -2223,9 +2237,9 @@ class EmojinokoMonitor:
                 self._auto_relogin()
                 return
 
-            if r.status_code == 200:
-                usage_data = r.json()
-                self.root.after(0, self._process_usage_delta, usage_data)
+            r.raise_for_status()
+            usage_data = r.json()
+            self.root.after(0, self._process_usage_delta, usage_data)
         except Exception as e:
             import traceback
             print("\n=== [地瓜球對帳連線錯誤日誌] ===")
@@ -2240,7 +2254,7 @@ class EmojinokoMonitor:
 
     def _process_usage_delta(self, usage_data):
         """在 GUI 主線程比對新用量與舊用量差額，並實作投餵事件"""
-        if not usage_data:
+        if usage_data is None:
             return
 
         # 計算本月統計總數
@@ -2249,6 +2263,8 @@ class EmojinokoMonitor:
         total_complete = sum(item.get("complete_tokens", 0) for item in usage_data)
         self.monthly_prompt_tokens = int(total_prompt)
         self.monthly_complete_tokens = int(total_complete)
+        self.monthly_cost_usd = float(total_price)
+        self.usage_status = "offline" if self.STANDALONE else "live"
         
         twd = total_price * 32.0
         self.monthly_price_str = f"${total_price:.2f} USD (≈NT${twd:.0f})"
@@ -3006,7 +3022,6 @@ class EmojinokoMonitor:
         status_label = "隱藏狀態" if self._unity_status_visible else "顯示狀態"
         common = [
             ("💬  找地瓜球尬聊 (AI Chat)", self.open_ai_chat),
-            ("🍠  投餵／模擬用量增加", self.simulate_usage),
             ("💰  查看目前費用", self.show_current_cost),
             ("📊  詳細 Token 統計", self.open_detailed_stats),
             (f"📋  {status_label}資訊看板", self._toggle_unity_status_hud),
@@ -3021,6 +3036,8 @@ class EmojinokoMonitor:
             ("↩  回復便利貼", lambda: self._show_deleted_memos_menu(x_root, y_root)),
             ("⌨  快速鍵設定", self.open_hotkey_settings),
         ]
+        if self.STANDALONE:
+            common.insert(1, ("🍠  投餵／模擬用量增加", self.simulate_usage))
         if not self.STANDALONE:
             common.insert(1, ("↻  立即對帳", self.manual_refresh))
             common.append(("⏏  登出帳號", self._logout))
@@ -5933,7 +5950,7 @@ def _start_app():
         # The normal integrated launcher uses pythonw. A modal here can become
         # invisible and leave a duplicate background process behind, so a
         # second integrated launch simply exits while the existing pet stays.
-        if "--standalone" in sys.argv and "--unity-poc" in sys.argv:
+        if "--unity-poc" in sys.argv:
             return
         try:
             temp_r = tk.Tk()

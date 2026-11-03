@@ -134,12 +134,16 @@ dist/TokenPetUnity-v<版本>-win-x64.zip
 ## 啟動
 
 ```powershell
-python emojinoko_monitor.py --standalone --unity-poc
+python emojinoko_monitor.py --unity-poc
 ```
 
 Windows 開發環境也可以直接雙擊 repo 根目錄的 `run_unity_preview.cmd`。請勿用
 `TokenPetUnity.exe` 測試右鍵功能；該檔案是純 renderer，沒有 Python 選單與遊戲
 邏輯。
+
+預設啟動會登入公司 chatbot 並同步本月 Token 用量。需要純離線測試時，使用
+`run_unity_preview.cmd offline`，或在 Python 指令加上 `--standalone`；
+離線模式的模擬數字不代表公司實際用量。
 
 正式測試請使用上述整合啟動方式。單獨執行 `TokenPetUnity.exe` 只有 renderer，
 不包含原本由 Python 管理的功能面板、商店、便利貼與存檔。純 renderer 可按
@@ -149,7 +153,7 @@ Windows 開發環境也可以直接雙擊 repo 根目錄的 `run_unity_preview.c
 
 ```powershell
 $env:TOKENPET_UNITY_RENDERER = "D:\path\to\TokenPetUnity.exe"
-python emojinoko_monitor.py --standalone --unity-poc
+python emojinoko_monitor.py --unity-poc
 ```
 
 也能在既有設定檔加入：

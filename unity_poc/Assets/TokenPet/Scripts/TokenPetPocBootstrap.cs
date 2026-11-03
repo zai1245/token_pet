@@ -6,7 +6,7 @@ namespace TokenPet
 {
     public sealed class TokenPetPocBootstrap : MonoBehaviour
     {
-        public const string RendererVersion = "0.8.7-preview";
+        public const string RendererVersion = "0.8.8-preview";
 
         private enum MotionState
         {
@@ -911,14 +911,9 @@ namespace TokenPet
                     {
                         equipment.SyncItem(command.item);
                     }
-                    statusHud.SetStatus(
-                        command.level,
-                        command.xp,
-                        command.xp_max,
-                        command.satiety,
-                        command.coins,
-                        command.prompt_tokens,
-                        command.complete_tokens);
+                    statusHud.SetUsage(
+                        command.cost_usd,
+                        command.usage_status);
                     break;
                 case "trigger":
                     if (string.Equals(command.action, "poke", StringComparison.OrdinalIgnoreCase))

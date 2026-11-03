@@ -43,6 +43,13 @@ python emojinoko_monitor.py --standalone
 
 ## 4. 開啟與建置 Unity renderer
 
+Git clone 只取得原始碼，不包含已被 `.gitignore` 排除的
+`unity_poc/Build/TokenPetUnity.exe` 與 Unity runtime。缺少這些檔案時，
+即使使用 `run_unity_preview.cmd` 也會退回 Canvas。
+若只需執行，可從 GitHub Releases 下載與 `tokenpet_version.py` 版本相同的
+整合 ZIP，將其中完整的 `unity_poc/Build/` 複製至工作目錄的相同位置；
+保留工作目錄中的 Python 原始碼。若修改 Unity 原始碼，則依以下步驟重建。
+
 在 Unity Hub 用上述 Editor 版本開啟 repo 內的 `unity_poc` 資料夾。第一次開啟會
 依 lock file 還原 package，並由 Editor script 確認 PoC scene 與 Player 設定。
 
@@ -74,18 +81,24 @@ if ($LASTEXITCODE -ne 0) { throw "Unity build failed: $LASTEXITCODE" }
 ## 5. 整合啟動與驗證
 
 ```powershell
-python emojinoko_monitor.py --standalone --unity-poc
+python emojinoko_monitor.py --unity-poc
 
 python -m unittest discover -s tests -v
 python -m py_compile emojinoko_monitor.py unity_renderer_bridge.py
 git diff --check
 ```
 
+雙擊 `run_unity_preview.cmd` 會先登入公司 chatbot，再每 60 秒同步本月
+使用費用（USD）至 Unity 狀態列；右鍵「立即對帳」可手動刷新。
+首次登入需要公司網路／VPN。單機測試請執行
+`run_unity_preview.cmd offline`（可加 `debug`、`shop` 或 `basketball`）；
+離線模式不會抓取公司用量，投餵／模擬用量功能只在此模式提供。
+
 若 Player 放在別處：
 
 ```powershell
 $env:TOKENPET_UNITY_RENDERER = "D:\path\to\TokenPetUnity.exe"
-python emojinoko_monitor.py --standalone --unity-poc
+python emojinoko_monitor.py --unity-poc
 ```
 
 ## 6. 必須提交與不得提交

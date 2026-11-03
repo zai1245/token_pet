@@ -33,6 +33,8 @@ namespace TokenPet
         public int coins;
         public long prompt_tokens;
         public long complete_tokens;
+        public double cost_usd;
+        public string usage_status = "live";
         public string eat_type;
         public string furniture;
         public string effects;

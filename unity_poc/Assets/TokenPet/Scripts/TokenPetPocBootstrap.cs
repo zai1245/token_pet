@@ -214,6 +214,7 @@ namespace TokenPet
             headSocket.localPosition = Vector3.zero;
 
             equipment = rigRoot.gameObject.AddComponent<TokenPetEquipmentController>();
+            equipment.SetHeadSurface(renderer);
             equipment.RegisterSocket("head", headSocket);
             equipment.RegisterSocket("face", motionRoot);
             equipment.RegisterSocket("neck", motionRoot);

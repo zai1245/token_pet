@@ -42,7 +42,37 @@ namespace TokenPet
         private readonly Dictionary<string, AccessoryDefinition> catalog = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, GameObject> equippedObjects = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> equippedIds = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, float> headSeatOffsets = new(StringComparer.OrdinalIgnoreCase);
+        private float[] headTopByColumn;
+        private float headPixelWidth;
+        private float headLeft;
         private bool backFacing;
+
+        public void SetHeadSurface(SpriteRenderer bodyRenderer)
+        {
+            // Sprite bounds include transparent padding. Measure the painted
+            // silhouette so a brim seats into the actual round head instead.
+            Sprite sprite = bodyRenderer.sprite;
+            Color32[] pixels = ReadPixels(sprite.texture);
+            int width = sprite.texture.width;
+            int height = sprite.texture.height;
+            headPixelWidth = bodyRenderer.transform.localScale.x / sprite.pixelsPerUnit;
+            float pixelHeight = bodyRenderer.transform.localScale.y / sprite.pixelsPerUnit;
+            headLeft = bodyRenderer.transform.localPosition.x - sprite.pivot.x * headPixelWidth;
+            headTopByColumn = new float[width];
+            for (int x = 0; x < width; x++)
+            {
+                headTopByColumn[x] = float.NaN;
+                for (int y = height - 1; y >= 0; y--)
+                {
+                    if (pixels[y * width + x].a < 64) continue;
+                    headTopByColumn[x] = bodyRenderer.transform.localPosition.y +
+                        (y + 0.5f - sprite.pivot.y) * pixelHeight;
+                    break;
+                }
+            }
+            headSeatOffsets.Clear();
+        }
 
         public void RegisterSocket(string slot, Transform socket)
         {
@@ -100,6 +130,7 @@ namespace TokenPet
             instance.transform.SetParent(socket, false);
             instance.transform.localPosition = new Vector3(definition.offset_x, definition.offset_y, 0f);
             instance.transform.localScale = Vector3.one * definition.scale;
+            SeatHeadwear(definition, instance.transform);
             SpriteRenderer[] renderers = instance.GetComponentsInChildren<SpriteRenderer>(true);
             int minimumOrder = int.MaxValue;
             foreach (SpriteRenderer renderer in renderers)
@@ -126,6 +157,91 @@ namespace TokenPet
             equippedIds[slot] = definition.id;
             RefreshArtworkVariants();
             return true;
+        }
+
+        private void SeatHeadwear(AccessoryDefinition definition, Transform instance)
+        {
+            // Halos deliberately float, and pinned ornaments already have a
+            // stem/pin anchor. Wraparound helmets keep their paired alignment.
+            if (definition.slot != "head" || definition.id == "halo" ||
+                definition.id == "sakura_hairpin" || definition.id == "clover_sprout" ||
+                !string.IsNullOrWhiteSpace(definition.back_resource) || headTopByColumn == null)
+                return;
+            if (!headSeatOffsets.TryGetValue(definition.id, out float lowerBy))
+            {
+                Transform artwork = instance.Find("FrontArtwork");
+                SpriteRenderer renderer = artwork != null ? artwork.GetComponent<SpriteRenderer>() : null;
+                if (renderer == null || renderer.sprite == null) return;
+                Sprite sprite = renderer.sprite;
+                Color32[] pixels = ReadPixels(sprite.texture);
+                int width = sprite.texture.width;
+                int height = sprite.texture.height;
+                int[] bottom = new int[width];
+                int left = width;
+                int right = -1;
+                for (int x = 0; x < width; x++)
+                {
+                    bottom[x] = -1;
+                    for (int y = 0; y < height; y++)
+                    {
+                        if (pixels[y * width + x].a < 64) continue;
+                        bottom[x] = y;
+                        left = Math.Min(left, x);
+                        right = Math.Max(right, x);
+                        break;
+                    }
+                }
+                List<float> gaps = new();
+                // Ignore the brim tips and hanging tassels: the inner 60% is
+                // the part that should rest on the crown of the head.
+                int inset = Mathf.RoundToInt((right - left + 1) * 0.2f);
+                float pixelSize = definition.scale / sprite.pixelsPerUnit;
+                for (int x = left + inset; x <= right - inset; x++)
+                {
+                    if (bottom[x] < 0) continue;
+                    float contactX = definition.offset_x + (x + 0.5f - sprite.pivot.x) * pixelSize;
+                    int headX = Mathf.FloorToInt((contactX - headLeft) / headPixelWidth);
+                    if (headX < 0 || headX >= headTopByColumn.Length || float.IsNaN(headTopByColumn[headX]))
+                        continue;
+                    float contactY = definition.offset_y + (bottom[x] + 0.5f - sprite.pivot.y) * pixelSize;
+                    gaps.Add(contactY - headTopByColumn[headX]);
+                }
+                lowerBy = 0f;
+                if (gaps.Count > 0)
+                {
+                    gaps.Sort();
+                    // A small overlap hides the body's dark outline under the
+                    // brim and keeps the attachment grounded while squashing.
+                    lowerBy = Mathf.Clamp(gaps[Mathf.RoundToInt((gaps.Count - 1) * 0.65f)] + 0.14f, 0f, 0.28f);
+                }
+                headSeatOffsets[definition.id] = lowerBy;
+            }
+            instance.localPosition += Vector3.down * lowerBy;
+        }
+
+        private static Color32[] ReadPixels(Texture2D source)
+        {
+            // Imported art is intentionally not CPU-readable. Read a temporary
+            // GPU copy once per item rather than changing texture import flags.
+            RenderTexture previous = RenderTexture.active;
+            RenderTexture copy = RenderTexture.GetTemporary(source.width, source.height, 0,
+                RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            Texture2D readable = null;
+            try
+            {
+                Graphics.Blit(source, copy);
+                RenderTexture.active = copy;
+                readable = new Texture2D(source.width, source.height, TextureFormat.RGBA32, false, true);
+                readable.ReadPixels(new Rect(0, 0, source.width, source.height), 0, 0, false);
+                readable.Apply(false, false);
+                return readable.GetPixels32();
+            }
+            finally
+            {
+                RenderTexture.active = previous;
+                RenderTexture.ReleaseTemporary(copy);
+                if (readable != null) Destroy(readable);
+            }
         }
 
         public void Toggle(string slot, string itemId)

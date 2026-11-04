@@ -188,11 +188,28 @@ class TokenUsageSyncTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name == "nt", "Windows launcher")
 class UnityLauncherTests(unittest.TestCase):
+    @contextlib.contextmanager
+    def launcher_directory(self):
+        directory = tempfile.TemporaryDirectory()
+        try:
+            yield directory.name
+        finally:
+            # Windows can briefly retain the subprocess's working directory
+            # after it exits. Retry cleanup without hiding persistent locks.
+            for attempt in range(20):
+                try:
+                    directory.cleanup()
+                    break
+                except PermissionError:
+                    if attempt == 19:
+                        raise
+                    time.sleep(0.05)
+
     def test_launcher_defaults_to_company_monitoring_and_keeps_explicit_offline(self):
         # Execute the real .cmd against a recording script, without opening UI
         # or contacting the company service. Also cover the pythonw path.
         for args in ([], ["debug"], ["offline", "debug"], ["debug", "offline"], ["shop", "debug"]):
-            with self.subTest(args=args), tempfile.TemporaryDirectory() as directory:
+            with self.subTest(args=args), self.launcher_directory() as directory:
                 root = Path(directory)
                 launcher = root / "run_unity_preview.cmd"
                 shutil.copy2(ROOT / launcher.name, launcher)

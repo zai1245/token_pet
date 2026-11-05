@@ -72,3 +72,17 @@ The earlier Unity-specific throw tuning did not match the original Canvas feel. 
 - Recompiled the local production managed renderer. **121 tests passed**, including a 150-frame Canvas/Unity trajectory comparison through floor impacts and final rest. An isolated native Unity probe passed **10 sampling, ownership and rotation checks**. The test probe is never included in the production assembly.
 
 The native probe test requires an installed Mono player and .NET SDK; otherwise that optional test is skipped. It builds and runs in a temporary runtime copy, leaving the production build untouched.
+
+### Follow-up: transparent edges and art polish — v0.8.12-preview
+
+The bright contour was reproduced on the actual desktop: bilinear/antialiased sprite edges blended with the magenta camera matte, and exact color-key removal left those mixed pixels visible.
+
+- Replaced color-key layering with DWM framebuffer-alpha composition and a transparent camera clear color. The explicit empty blur region preserves transparency across desktop background changes; the native window remains activatable and uses the existing hit-test routing. DWM initialization failure exits the renderer so Python can restore Canvas. The alpha contract is documented by [Microsoft](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/nf-dwmapi-dwmenableblurbehindwindow); the empty-region configuration is also used by [GLFW's Windows implementation](https://github.com/glfw/glfw/blob/master/src/win32_window.c).
+- Enabled 4× MSAA. Existing painted artwork and transparent edge detail are retained; no raster assets, import data or scenes were changed.
+- Fixed double multiplication of limb tint and selected a warmer brown. Added subtle contact shadows; furniture shadows use measured opaque artwork bounds instead of transparent canvas padding. Generated furniture sprites now release their runtime resources on despawn.
+- Unified the compact 252×36 monthly USD tag, shop, furniture menu and basketball score card around warm paper colors, restrained borders, rounded corners and muted accents. Popup text uses a finer warm outline. No extra information was added to the monthly-cost tag.
+- Removed a physics-step dependency from pet hit bounds so the interactive area follows an immediate visual move. Native checks verify that empty pixels reach a separate application's window while the visible pet remains interactive.
+
+Validation: **122 tests passed**. The real Unity art probe passed **14 checks** covering dark/light desktop backgrounds, zero magenta-matte fringe pixels in the fixture, fractional alpha, contact-shadow placement, single limb tint and cross-process hit testing. The existing **10 native physics checks** and Canvas/Unity trajectory comparison also pass.
+
+Actual desktop previews are produced at `scratch/art-review/art-dark.png`, `art-light.png` and `art-shop.png`. The probe captures only its own controlled backdrop/fixture; no personal desktop content is used. Test-only components are compiled into an isolated runtime copy and excluded from production packages.

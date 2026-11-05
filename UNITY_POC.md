@@ -5,6 +5,24 @@
 `EmojinokoPet`、Tkinter Canvas、物理迴圈、家具與存檔均完整保留，預設也仍然
 啟用舊版 renderer。
 
+## v0.8.12 preview：透明合成與美術整理
+
+Windows 10/11 顯示程序使用 DWM 直接合成 framebuffer alpha。Camera 清為透明黑，
+保留半透明邊緣；不再用洋紅色鍵去背，避免角色、配件與家具外圍的亮圈。
+維持 D3D11 blit-model swapchain（`PlayerSettings.useFlipModelSwapchain = false`），
+並啟用 4× MSAA。合成初始化失敗時退出 Unity，讓 Python 恢復 Canvas。
+
+角色四肢使用單次暖棕色著色；角色與家具加入柔和接觸陰影，家具陰影依實際不透明
+輪廓定位。費用標籤、商店與家具選單統一為暖色圓角卡片。標籤維持 252×36 邏輯尺寸，
+仍只顯示本月 USD 費用與同步狀態，不加入等級或輸入／輸出用量。
+
+拋擲沿用 v0.8.11 的 Canvas 共用物理：相同速度採樣、重力、阻力、反彈與角度。
+拖住角色時 Unity 控制位置，放手確認後再交回 Python。
+
+美術回歸測試：`python -m unittest discover -s tests -p test_unity_art_runtime.py -v`。
+有本機 Mono player 與 .NET SDK 時，會以隔離的測試程序在受控黑／白背景驗證真實桌面
+透明合成，並將預覽保存至 `scratch/art-review/`；測試元件不會加入正式產物。
+
 ## v0.7.0 preview：透明桌面舞台與 Unity 家具實體
 
 Unity Player 現在覆蓋 Windows 虛擬桌面作為透明舞台，但只有角色、家具和已開啟
@@ -16,8 +34,8 @@ pixel TV、kotatsu）都有 Unity 實體、拖曳與 Unity 內右鍵收回選單
 存檔座標、商店、角色走向家具、吸附姿勢、計時獎勵與碰撞；`UnityFurnitureProxy`
 維持舊物理介面，Unity 失效時則會在原位置重建 Tk 家具視窗。
 
-放手速度已加入合理上限，Unity 落地最多只會有一次短回彈，並依角色所在螢幕的
-Windows work area 強制回到工作列上緣，不再因異常游標速度長時間飄浮。
+早期 Unity 專用的速度上限與單次短回彈，已於 v0.8.11 被共用 Canvas 規則取代。
+落點仍依角色所在螢幕的 Windows work area 計算。
 
 ## v0.6.0 preview：桌面物理與互動回饋橋接
 
@@ -65,7 +83,7 @@ Unity 啟動或連線失敗時，原本 Canvas renderer 仍會自動恢復。
 
 - 沒有 `--unity-poc` 時，行為與原本版本相同。
 - 找不到 Unity build 時，不隱藏舊地瓜球。
-- Unity 十五秒內未連線時，自動維持／恢復舊地瓜球。
+- Unity 四十五秒內未就緒時，自動維持／恢復舊地瓜球。
 - Unity 程序退出或 IPC 中斷時，自動恢復舊地瓜球。
 - Unity 正常啟動後，舊 pet object 與物理迴圈仍在背景運作，沒有被刪除。
 - F7 會同步顯示／隱藏 Unity renderer 與既有輔助視窗。
@@ -82,7 +100,7 @@ Unity 啟動或連線失敗時，原本 Canvas renderer 仍會自動恢復。
 - 五官已從身體分層；Unity 即時控制追視、隨機眨眼、眉毛與各動作的眼睛／嘴型
 - 虛擬桌面大小的透明舞台搭配動態 click-through；不再用 viewport clamp 限制動作
 - 地瓜球本體直徑仍約 104px，沿用原 Canvas 的 340×300 邏輯框與 (170, 205) 錨點
-- 等級、XP、飽食度與地瓜幣由 Unity 繪製在角色邏輯框底部；舊獨立 HUD 僅供 Canvas fallback
+- Unity 底部只顯示本月 USD 費用；等級、XP、飽食度與地瓜幣可透過既有遊戲功能查看
 - 八種家具由 Unity 程序化渲染，可在桌面拖曳與右鍵收回，舊 Tk 家具保留為 fallback
 - 道具控制器、JSON catalog 與 head/face/neck/body sockets；完整舊配件皆可替換
 - 無邊框、置頂、正式模式不顯示於工作列

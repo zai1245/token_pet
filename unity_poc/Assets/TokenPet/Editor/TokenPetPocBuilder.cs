@@ -46,7 +46,7 @@ namespace TokenPet.Editor
             PlayerSettings.runInBackground = true;
             PlayerSettings.fullScreenMode = FullScreenMode.Windowed;
             PlayerSettings.colorSpace = ColorSpace.Linear;
-            // Layered/DWM transparent windows require the legacy blit-model D3D11
+            // DWM framebuffer transparency requires the legacy blit-model D3D11
             // swap chain. Flip-model swap chains are composed as opaque black.
             PlayerSettings.useFlipModelSwapchain = false;
         }

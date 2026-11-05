@@ -6,7 +6,7 @@ namespace TokenPet
 {
     public sealed class TokenPetPocBootstrap : MonoBehaviour
     {
-        public const string RendererVersion = "0.8.11-preview";
+        public const string RendererVersion = "0.8.12-preview";
 
         private enum MotionState
         {
@@ -31,6 +31,7 @@ namespace TokenPet
         private Transform rigRoot;
         private Transform motionRoot;
         private Transform body;
+        private GameObject contactShadow;
         private Transform headSocket;
         private TokenPetLimbRig limbRig;
         private TokenPetExpressionRig expressionRig;
@@ -137,11 +138,12 @@ namespace TokenPet
             petCamera.orthographic = true;
             petCamera.orthographicSize = LegacyCanvasHeight * WorldUnitsPerPixel * 0.5f;
             petCamera.clearFlags = CameraClearFlags.SolidColor;
-            // Reserved chroma key used by TokenPetWindowsOverlay. Pure magenta is
-            // intentionally absent from the character and accessory palette.
-            petCamera.backgroundColor = new Color32(255, 0, 255, 255);
+            // DWM uses the real alpha channel, including soft sprite edges,
+            // typography and shadows. No matte color is mixed into the art.
+            petCamera.backgroundColor = Color.clear;
             petCamera.allowHDR = false;
-            petCamera.allowMSAA = false;
+            QualitySettings.antiAliasing = 4;
+            petCamera.allowMSAA = true;
             // Match the original 340x300 Canvas exactly: a 104 px body centered
             // at the legacy (170, 205-from-top) character anchor.
             float anchorFromBottom = LegacyCanvasHeight - LegacyAnchorYFromTop;
@@ -190,6 +192,8 @@ namespace TokenPet
             renderer.sortingOrder = 10;
             baseBodyScale = CharacterWidth / sprite.bounds.size.x;
             body.localScale = Vector3.one * baseBodyScale;
+            contactShadow = TokenPetProceduralArt.ContactShadow(transform,
+                Vector2.zero, new Vector2(1.25f, 0.15f));
 
             if (usingRigBody)
             {
@@ -301,7 +305,10 @@ namespace TokenPet
                 return;
 
             Vector3 world = petCamera.ScreenToWorldPoint(Input.mousePosition);
-            bool overPet = hitCollider != null && hitCollider.OverlapPoint(world);
+            Bounds hitBounds = hitCollider != null ? CurrentPetHitBounds() : new Bounds();
+            bool overPet = hitCollider != null && hitCollider.enabled && hitCollider.gameObject.activeInHierarchy &&
+                ((Vector2)world - (Vector2)hitBounds.center).sqrMagnitude <=
+                hitBounds.extents.x * hitBounds.extents.x;
 
             if ((nativeContextClick || Input.GetMouseButtonDown(1)) &&
                 (nativeContextClick || overPet) && Time.unscaledTime - lastContextMenuAt > 0.25f)
@@ -670,6 +677,14 @@ namespace TokenPet
             }
             if (legacyVisuals != null)
                 legacyVisuals.Tick(Time.unscaledTime);
+            if (contactShadow != null)
+            {
+                bool seated = legacyState == "sleep_futon" || legacyState == "relax_sofa" ||
+                    legacyState == "warm_kotatsu" || legacyState == "work_laptop" ||
+                    legacyState == "memo_perch" || legacyState == "memo_read";
+                contactShadow.SetActive(!seated && motion != MotionState.Drag && motion != MotionState.Airborne);
+                contactShadow.transform.position = rigRestPosition + Vector3.down * 0.99f;
+            }
             ClampVisualInsideViewport();
         }
 
@@ -848,8 +863,12 @@ namespace TokenPet
         {
             if (hitCollider == null || petCamera == null || overlay == null || !overlay.IsDesktopStage)
                 return;
-
-            Bounds bounds = hitCollider.bounds;
+            if (!hitCollider.enabled || !hitCollider.gameObject.activeInHierarchy)
+            {
+                cachedPetInteractiveRect = new RectInt();
+                return;
+            }
+            Bounds bounds = CurrentPetHitBounds();
             Vector3 screenMin = petCamera.WorldToScreenPoint(
                 new Vector3(bounds.min.x, bounds.min.y, 0f));
             Vector3 screenMax = petCamera.WorldToScreenPoint(
@@ -863,6 +882,18 @@ namespace TokenPet
                 Mathf.FloorToInt(Mathf.Min(screenMin.y, screenMax.y)) + padding;
             cachedPetInteractiveRect = new RectInt(left, top,
                 Mathf.Max(1, right - left), Mathf.Max(1, bottom - top));
+        }
+
+        private Bounds CurrentPetHitBounds()
+        {
+            // The rendered transform can move between Physics2D steps. Using
+            // collider.bounds/OverlapPoint here left the clickable area behind
+            // the visible pet for a frame after a desktop move.
+            Transform frame = hitCollider.transform;
+            Vector3 center = frame.TransformPoint(new Vector3(hitCollider.offset.x, hitCollider.offset.y, 0f));
+            Vector3 scale = frame.lossyScale;
+            float radius = hitCollider.radius * Mathf.Max(Mathf.Abs(scale.x), Mathf.Abs(scale.y));
+            return new Bounds(center, new Vector3(radius * 2f, radius * 2f, 0f));
         }
 
         private void OnCommand(RendererCommand command)

@@ -66,8 +66,8 @@ namespace TokenPet
             Color fill = ParseColor(htmlColor, new Color32(249, 226, 175, 255));
             Vector2[] outlineOffsets =
             {
-                new(-0.025f, 0f), new(0.025f, 0f),
-                new(0f, -0.025f), new(0f, 0.025f)
+                new(-0.018f, 0f), new(0.018f, 0f),
+                new(0f, -0.018f), new(0f, 0.018f)
             };
             TextMesh[] meshes = new TextMesh[5];
             for (int i = 0; i < meshes.Length; i++)
@@ -82,7 +82,7 @@ namespace TokenPet
                 mesh.alignment = TextAlignment.Center;
                 mesh.fontSize = 28;
                 mesh.characterSize = 0.040f;
-                mesh.color = i == 4 ? fill : new Color32(48, 24, 15, 255);
+                mesh.color = i == 4 ? fill : new Color32(73, 45, 29, 240);
                 if (font != null)
                 {
                     mesh.font = font;

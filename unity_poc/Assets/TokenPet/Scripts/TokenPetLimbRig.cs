@@ -9,7 +9,7 @@ namespace TokenPet
     /// </summary>
     public sealed class TokenPetLimbRig : MonoBehaviour
     {
-        private static readonly Color LimbColor = new Color32(82, 35, 17, 255);
+        private static readonly Color LimbColor = new Color32(94, 53, 31, 255);
         private const float LegRootY = -0.73f;
 
         private LineRenderer leftArm;
@@ -34,7 +34,9 @@ namespace TokenPet
             limbMaterial = new Material(shader)
             {
                 name = "TokenPet Noodle Limb Material",
-                color = LimbColor
+                // The line's vertex color already supplies the warm ink.
+                // Tinting the material too multiplies it to almost black.
+                color = Color.white
             };
 
             leftArm = CreateLimb("Arm_Left", 0.125f);

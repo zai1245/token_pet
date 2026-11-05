@@ -36,6 +36,9 @@ COMPILER = find_compiler() if os.name == "nt" else None
                      "Built Windows Mono player and .NET SDK required")
 class UnityThrowRuntimeTests(unittest.TestCase):
     def test_native_sampling_handoff_and_canvas_rotation(self):
+        self.run_native_probe("ThrowPhysicsProbe", "TOKENPET_THROW_PROBE_OUTPUT")
+
+    def run_native_probe(self, probe_name, output_variable, preview_directory=None):
         with tempfile.TemporaryDirectory(prefix="tokenpet-throw-test-") as directory:
             work = Path(directory)
             runtime = work / "runtime"
@@ -48,7 +51,7 @@ class UnityThrowRuntimeTests(unittest.TestCase):
             marker = "StartCoroutine(AnnounceReady());"
             self.assertEqual(1, source.count(marker))
             bootstrap.write_text(source.replace(marker, marker +
-                '\n            new GameObject("Throw physics probe").AddComponent<TokenPet.ThrowPhysicsProbe>();'),
+                f'\n            new GameObject("{probe_name}").AddComponent<TokenPet.{probe_name}>();'),
                 encoding="utf-8")
             managed = runtime / "TokenPetUnity_Data/Managed"
             arguments = ["/nologo", "/target:library", "/langversion:9.0", "/nostdlib+", "/optimize+",
@@ -57,7 +60,7 @@ class UnityThrowRuntimeTests(unittest.TestCase):
             arguments += [f'/reference:"{path}"' for path in sorted(managed.glob("*.dll"))
                           if path.name != "Assembly-CSharp.dll"]
             arguments += [f'"{path}"' for path in sorted(scripts.glob("*.cs")) if path.name != bootstrap.name]
-            arguments += [f'"{bootstrap}"', f'"{ROOT / "tests/unity/ThrowPhysicsProbe.cs"}"']
+            arguments += [f'"{bootstrap}"', f'"{ROOT / "tests/unity" / (probe_name + ".cs")}"']
             response_file = work / "probe.rsp"
             response_file.write_text("\n".join(arguments), encoding="utf-8")
             result = subprocess.run(["dotnet", str(COMPILER), "@" + str(response_file)],
@@ -71,13 +74,17 @@ class UnityThrowRuntimeTests(unittest.TestCase):
                 return popen([*command, "-logFile", str(log)], **kwargs)
 
             try:
-                with mock.patch.dict(os.environ, TOKENPET_THROW_PROBE_OUTPUT=str(output)), \
+                with mock.patch.dict(os.environ, {output_variable: str(output)}), \
                         mock.patch("unity_renderer_bridge.subprocess.Popen", side_effect=launch):
                     self.assertTrue(bridge.start())
                 exit_code = bridge.process.wait(timeout=25)
                 details = output.read_text() if output.exists() else log.read_text(errors="replace")[-4000:]
                 self.assertEqual(0, exit_code, details)
                 self.assertTrue(details.startswith("PASS:"), details)
+                if preview_directory is not None:
+                    preview_directory.mkdir(parents=True, exist_ok=True)
+                    for preview in work.glob("*.png"):
+                        shutil.copy2(preview, preview_directory / preview.name)
                 print(details)
             finally:
                 bridge.stop()

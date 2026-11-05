@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/GUI-Tkinter%20Canvas-orange.svg" alt="GUI Framework">
   <img src="https://img.shields.io/badge/AI-DeepSeek--V4%20%2F%20GLM--5-purple.svg" alt="AI Model">
   <img src="https://img.shields.io/badge/OS-Windows-success.svg" alt="OS Support">
-  <img src="https://img.shields.io/badge/Version-0.8.11--preview-brightgreen.svg" alt="App Version">
+  <img src="https://img.shields.io/badge/Version-0.8.12--preview-brightgreen.svg" alt="App Version">
 </p>
 
 **TokenPet（地瓜球）** 是一隻運行在 Windows 桌面上的軟萌 Q 彈 2.5D 電子寵物與 API Token 即時用量監控助理！它不僅能即時監控 API 費用與用量，還擁有完整的果凍物理彈性引擎、動態 360° 轉身渲染、AI 智慧尬聊、日式和風便利貼、家具互動以及豐富的休閒小遊戲！

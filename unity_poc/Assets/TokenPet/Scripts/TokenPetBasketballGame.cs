@@ -9,11 +9,11 @@ namespace TokenPet
     /// </summary>
     public sealed class TokenPetBasketballGame : MonoBehaviour
     {
-        private static readonly Color32 Board = new(24, 24, 37, 255);
-        private static readonly Color32 Blue = new(137, 180, 250, 255);
-        private static readonly Color32 Pink = new(243, 139, 168, 255);
-        private static readonly Color32 Net = new(205, 214, 244, 255);
-        private static readonly Color32 Green = new(166, 227, 161, 255);
+        private static readonly Color32 Board = new(83, 66, 54, 255);
+        private static readonly Color32 Blue = new(148, 177, 183, 255);
+        private static readonly Color32 Pink = new(207, 126, 101, 255);
+        private static readonly Color32 Net = new(231, 220, 198, 255);
+        private static readonly Color32 Green = new(161, 188, 136, 255);
 
         private TokenPetIpcClient ipc;
         private TokenPetWindowsOverlay overlay;
@@ -186,6 +186,9 @@ namespace TokenPet
             DrawLine(new Vector2(x + 94f, y + 154f + kick * 0.3f), new Vector2(x + 188f, y + 154f + kick * 0.3f), netTexture, 1.5f);
             DrawLine(new Vector2(x + 104f, y + 174f + kick * 0.65f), new Vector2(x + 178f, y + 174f + kick * 0.65f), netTexture, 1.5f);
 
+            TokenPetArtStyle.Panel(new Rect(x + 42f, y + 12f, 198f, 48f), 10f);
+            TokenPetArtStyle.RoundRect(new Rect(x + 247f, y + 20f, 28f, 28f),
+                TokenPetArtStyle.Paper, 14f);
             GUI.Label(new Rect(x + 54f, y + 16f, 175f, 34f), $"SCORE: {score}", scoreStyle);
             GUI.Label(new Rect(x + 246f, y + 18f, 30f, 30f), "×", closeStyle);
         }
@@ -212,7 +215,7 @@ namespace TokenPet
                 fontStyle = FontStyle.Bold,
                 alignment = TextAnchor.MiddleCenter,
                 clipping = TextClipping.Clip,
-                normal = { textColor = Green }
+                normal = { textColor = TokenPetArtStyle.Ink }
             };
             closeStyle = new GUIStyle(GUI.skin.label)
             {

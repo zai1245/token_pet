@@ -17,6 +17,92 @@ namespace TokenPet
     internal static class TokenPetProceduralArt
     {
         private static readonly Dictionary<TokenPetShape, Sprite> Sprites = new();
+        private static Sprite contactShadow;
+        private static readonly Dictionary<Texture2D, RectInt> opaqueBounds = new();
+
+        public static Bounds VisibleBounds(SpriteRenderer renderer, Transform reference)
+        {
+            Sprite sprite = renderer.sprite;
+            Texture2D texture = sprite.texture;
+            if (!opaqueBounds.TryGetValue(texture, out RectInt pixels))
+            {
+                Color32[] data = ReadPixels(texture);
+                int left = texture.width, right = -1, bottom = texture.height, top = -1;
+                for (int y = 0; y < texture.height; y++)
+                for (int x = 0; x < texture.width; x++)
+                {
+                    if (data[y * texture.width + x].a < 64) continue;
+                    left = Math.Min(left, x); right = Math.Max(right, x);
+                    bottom = Math.Min(bottom, y); top = Math.Max(top, y);
+                }
+                pixels = right >= left ? new RectInt(left, bottom, right - left + 1, top - bottom + 1) :
+                    new RectInt(0, 0, texture.width, texture.height);
+                opaqueBounds[texture] = pixels;
+            }
+            Vector3 minimum = reference.InverseTransformPoint(renderer.transform.TransformPoint(
+                new Vector3(pixels.xMin - sprite.pivot.x, pixels.yMin - sprite.pivot.y, 0f) / sprite.pixelsPerUnit));
+            Vector3 maximum = reference.InverseTransformPoint(renderer.transform.TransformPoint(
+                new Vector3(pixels.xMax - sprite.pivot.x, pixels.yMax - sprite.pivot.y, 0f) / sprite.pixelsPerUnit));
+            Bounds bounds = new(); bounds.SetMinMax(minimum, maximum);
+            return bounds;
+        }
+
+        public static Color32[] ReadPixels(Texture2D source)
+        {
+            if (source.isReadable) return source.GetPixels32();
+            RenderTexture previous = RenderTexture.active;
+            RenderTexture copy = RenderTexture.GetTemporary(source.width, source.height, 0,
+                RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            Texture2D readable = null;
+            try
+            {
+                Graphics.Blit(source, copy); RenderTexture.active = copy;
+                readable = new Texture2D(source.width, source.height, TextureFormat.RGBA32, false, true);
+                readable.ReadPixels(new Rect(0, 0, source.width, source.height), 0, 0, false);
+                readable.Apply(false, false);
+                return readable.GetPixels32();
+            }
+            finally
+            {
+                RenderTexture.active = previous; RenderTexture.ReleaseTemporary(copy);
+                if (readable != null) UnityEngine.Object.Destroy(readable);
+            }
+        }
+
+        public static GameObject ContactShadow(Transform parent, Vector2 position, Vector2 size)
+        {
+            if (contactShadow == null)
+            {
+                const int resolution = 64;
+                Texture2D texture = new(resolution, resolution, TextureFormat.RGBA32, false)
+                {
+                    filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp,
+                    name = "Soft warm contact shadow"
+                };
+                Color[] pixels = new Color[resolution * resolution];
+                for (int y = 0; y < resolution; y++)
+                for (int x = 0; x < resolution; x++)
+                {
+                    float nx = (x + 0.5f) / resolution * 2f - 1f;
+                    float ny = (y + 0.5f) / resolution * 2f - 1f;
+                    float radius = nx * nx + ny * ny;
+                    float alpha = Mathf.Exp(-radius * 5f) *
+                        (1f - Mathf.SmoothStep(0.5f, 1f, radius)) * 0.18f;
+                    pixels[y * resolution + x] = new Color(0.22f, 0.13f, 0.08f, alpha);
+                }
+                texture.SetPixels(pixels); texture.Apply(false, true);
+                contactShadow = Sprite.Create(texture, new Rect(0, 0, resolution, resolution),
+                    new Vector2(0.5f, 0.5f), resolution);
+            }
+            GameObject item = new("Contact shadow");
+            item.transform.SetParent(parent, false);
+            item.transform.localPosition = position;
+            item.transform.localScale = new Vector3(size.x, size.y, 1f);
+            SpriteRenderer renderer = item.AddComponent<SpriteRenderer>();
+            renderer.sprite = contactShadow;
+            renderer.sortingOrder = 0;
+            return item;
+        }
 
         public static GameObject Shape(
             Transform parent, string name, TokenPetShape shape, Vector2 position,
@@ -106,6 +192,34 @@ namespace TokenPet
             float edge = Mathf.Lerp(0.42f, 0.96f,
                 Mathf.Abs(sector - Mathf.PI * 0.2f) / (Mathf.PI * 0.2f));
             return radius <= edge;
+        }
+    }
+
+    internal static class TokenPetArtStyle
+    {
+        public static readonly Color Ink = new Color32(80, 54, 37, 255);
+        public static readonly Color Paper = new Color32(255, 249, 237, 255);
+        public static readonly Color Border = new Color32(213, 191, 164, 255);
+        public static readonly Color Muted = new Color32(134, 112, 87, 255);
+
+        public static void RoundRect(Rect rect, Color color, float radius = 8f)
+        {
+            GUI.DrawTexture(rect, Texture2D.whiteTexture, ScaleMode.StretchToFill,
+                true, 0f, color, 0f, radius);
+        }
+
+        public static void Panel(Rect rect, float radius = 10f, bool shadow = true)
+        {
+            if (shadow)
+            {
+                RoundRect(new Rect(rect.x - 2f, rect.y + 3f, rect.width + 4f, rect.height),
+                    new Color(0.16f, 0.10f, 0.06f, 0.06f), radius + 2f);
+                RoundRect(new Rect(rect.x, rect.y + 2f, rect.width, rect.height),
+                    new Color(0.16f, 0.10f, 0.06f, 0.10f), radius);
+            }
+            RoundRect(rect, Border, radius);
+            RoundRect(new Rect(rect.x + 1f, rect.y + 1f, rect.width - 2f, rect.height - 2f),
+                Paper, Mathf.Max(0f, radius - 1f));
         }
     }
 }

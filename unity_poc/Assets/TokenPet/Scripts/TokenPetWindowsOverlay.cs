@@ -22,8 +22,6 @@ namespace TokenPet
         private const long WsExToolWindow = 0x00000080L;
         private const long WsExAppWindow = 0x00040000L;
         private const long WsExTransparent = 0x00000020L;
-        private const uint LwaColorKey = 0x00000001;
-        private const uint TransparentColorKey = 0x00FF00FF;
         private const int DwmwaNcRenderingPolicy = 2;
         private const int DwmncrpDisabled = 1;
         private const uint SwpNoSize = 0x0001;
@@ -63,6 +61,15 @@ namespace TokenPet
             public uint Flags;
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct BlurBehind
+        {
+            public uint Flags;
+            public int Enable;
+            public IntPtr Region;
+            public int TransitionOnMaximized;
+        }
+
         private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
         [UnmanagedFunctionPointer(CallingConvention.Winapi)]
@@ -87,8 +94,14 @@ namespace TokenPet
         private static extern IntPtr CallWindowProc(IntPtr previousWindowProc, IntPtr hWnd,
             uint message, IntPtr wParam, IntPtr lParam);
 
-        [DllImport("user32.dll", SetLastError = true)]
-        private static extern bool SetLayeredWindowAttributes(IntPtr hWnd, uint colorKey, byte alpha, uint flags);
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmEnableBlurBehindWindow(IntPtr hWnd, ref BlurBehind blur);
+
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr CreateRectRgn(int left, int top, int right, int bottom);
+
+        [DllImport("gdi32.dll")]
+        private static extern bool DeleteObject(IntPtr value);
 
         [DllImport("user32.dll")]
         private static extern bool SetWindowPos(IntPtr hWnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
@@ -153,7 +166,9 @@ namespace TokenPet
                 // Keep the player activatable. WS_EX_NOACTIVATE makes Unity's legacy
                 // input state unreliable and can make a click look like the window
                 // vanished even though the process is still alive.
-                exStyle |= WsExLayered;
+                // Let DWM compose the framebuffer's alpha directly. A layered
+                // color-key window leaves magenta in every antialiased edge.
+                exStyle &= ~WsExLayered;
                 if (HasArgument("--tokenpet-debug-window"))
                 {
                     exStyle &= ~WsExToolWindow;
@@ -174,12 +189,27 @@ namespace TokenPet
                 IntPtr callback = Marshal.GetFunctionPointerForDelegate(windowProc);
                 previousWindowProc = SetWindowLongPtr64(windowHandle, GwlWndProc, callback);
 
-                // Unity's player swapchain does not reliably preserve per-pixel alpha
-                // on every Windows compositor/GPU combination. A reserved magenta
-                // colour key is deterministic with the D3D11 bitblt swapchain and
-                // does not punch holes in the character's dark eyes or outline.
-                bool colorKeyApplied = SetLayeredWindowAttributes(
-                    windowHandle, TransparentColorKey, 255, LwaColorKey);
+                // An explicit empty blur region enables framebuffer alpha on
+                // Windows 10/11 without frosting the desktop. Supplying only
+                // DWM_BB_ENABLE can leave stale/opaque background pixels.
+                IntPtr region = CreateRectRgn(0, 0, -1, -1);
+                int alphaResult;
+                try
+                {
+                    BlurBehind blur = new() { Flags = 3, Enable = 1, Region = region };
+                    alphaResult = region != IntPtr.Zero
+                        ? DwmEnableBlurBehindWindow(windowHandle, ref blur) : -1;
+                }
+                finally
+                {
+                    if (region != IntPtr.Zero) DeleteObject(region);
+                }
+                if (alphaResult != 0)
+                {
+                    UnityEngine.Debug.LogError($"Desktop alpha composition unavailable: {alphaResult}; returning to Canvas.");
+                    Application.Quit();
+                    yield break;
+                }
                 int nonClientPolicy = DwmncrpDisabled;
                 int shadowResult = DwmSetWindowAttribute(windowHandle,
                     DwmwaNcRenderingPolicy, ref nonClientPolicy, sizeof(int));
@@ -187,7 +217,7 @@ namespace TokenPet
                     SwpNoMove | SwpNoSize | SwpFrameChanged);
                 UnityEngine.Debug.Log(
                     $"TokenPet overlay initialized. hwnd={windowHandle}, " +
-                    $"colorKey={colorKeyApplied}, shadow={shadowResult}, " +
+                    $"alpha={alphaResult == 0}, shadow={shadowResult}, " +
                     $"win32={Marshal.GetLastWin32Error()}");
                 int startX = ReadIntArgument("--tokenpet-x=", 0);
                 int startY = ReadIntArgument("--tokenpet-y=", 0);
@@ -263,7 +293,7 @@ namespace TokenPet
                 }
             }
 
-            // A full-desktop layered Unity window does not deliver legacy
+            // A full-desktop Unity window does not deliver legacy
             // Input.GetMouseButtonUp consistently on every Windows compositor.
             // Capture the native message and let Update consume it on Unity's
             // main thread.  This keeps the Python menu bridge reliable without

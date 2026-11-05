@@ -356,7 +356,6 @@ class UnityFullParityTests(unittest.TestCase):
         self.assertIn("class TokenPetShopPanel", panel)
         self.assertIn('event_name = "shop_action"', panel)
         self.assertIn("private void OnGUI()", panel)
-        self.assertIn("GUI.DrawTexture", panel)
         self.assertIn("overlay?.SetShopExpanded(true)", panel)
         self.assertIn("170f / Mathf.Max(1f, Screen.width)", panel)
         self.assertNotIn("UnityEngine.UI", panel)

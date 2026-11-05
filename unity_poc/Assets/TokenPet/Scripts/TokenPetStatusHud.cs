@@ -6,16 +6,12 @@ namespace TokenPet
     /// <summary>A compact monthly USD cost label; Python owns the usage data.</summary>
     public sealed class TokenPetStatusHud : MonoBehaviour
     {
-        private static readonly Color32 Outline = new(79, 42, 20, 255);
-        private static readonly Color32 Cream = new(255, 244, 210, 255);
         private double costUsd;
         private string usageStatus = "loading";
         private bool isVisible = true;
         private GUIStyle titleLabel;
         private GUIStyle amountLabel;
         private Font uiFont;
-        private Texture2D outlineTexture;
-        private Texture2D creamTexture;
         private TokenPetWindowsOverlay overlay;
 
         public bool IsVisible => isVisible;
@@ -35,12 +31,6 @@ namespace TokenPet
         public void SetVisible(bool visible)
         {
             isVisible = visible;
-        }
-
-        private void Awake()
-        {
-            outlineTexture = MakeTexture(Outline);
-            creamTexture = MakeTexture(Cream);
         }
 
         private void OnGUI()
@@ -72,14 +62,17 @@ namespace TokenPet
                 new Vector3(scale, scale, 1f));
             try
             {
-                GUI.DrawTexture(new Rect(0f, 0f, layoutWidth, layoutHeight), outlineTexture);
-                GUI.DrawTexture(new Rect(1f, 1f, layoutWidth - 2f, layoutHeight - 2f), creamTexture);
-                DrawFittedLabel(new Rect(12f, 7f, 70f, 22f), "本月費用", titleLabel, 12);
+                TokenPetArtStyle.Panel(new Rect(0f, 0f, layoutWidth, layoutHeight), 10f);
+                Color statusColor = usageStatus == "live" ? new Color32(126, 155, 108, 255) :
+                    usageStatus == "error" ? new Color32(198, 119, 104, 255) :
+                    new Color32(200, 166, 108, 255);
+                TokenPetArtStyle.RoundRect(new Rect(12f, 16f, 5f, 5f), statusColor, 2.5f);
+                DrawFittedLabel(new Rect(24f, 7f, 66f, 22f), "本月費用", titleLabel, 12);
                 string amount = usageStatus == "offline" ? "離線模式" :
                     usageStatus == "loading" ? "讀取中…" :
                     usageStatus == "error" ? "同步失敗" :
                     $"${costUsd.ToString("N2", CultureInfo.InvariantCulture)} USD";
-                DrawFittedLabel(new Rect(90f, 5f, 150f, 26f), amount, amountLabel, 12);
+                DrawFittedLabel(new Rect(96f, 5f, 142f, 26f), amount, amountLabel, 12);
             }
             finally
             {
@@ -116,29 +109,19 @@ namespace TokenPet
                 wordWrap = false,
                 font = uiFont,
                 padding = new RectOffset(0, 0, 0, 0),
-                normal = { textColor = Outline }
+                normal = { textColor = TokenPetArtStyle.Muted }
             };
-            amountLabel = new GUIStyle(titleLabel) { fontSize = 18, fontStyle = FontStyle.Bold };
-        }
-
-        private static Texture2D MakeTexture(Color32 color)
-        {
-            Texture2D texture = new(1, 1, TextureFormat.RGBA32, false)
+            amountLabel = new GUIStyle(titleLabel)
             {
-                filterMode = FilterMode.Point,
-                wrapMode = TextureWrapMode.Clamp,
-                hideFlags = HideFlags.HideAndDontSave
+                fontSize = 18, fontStyle = FontStyle.Bold,
+                alignment = TextAnchor.MiddleRight,
+                normal = { textColor = TokenPetArtStyle.Ink }
             };
-            texture.SetPixel(0, 0, color);
-            texture.Apply(false, true);
-            return texture;
         }
 
         private void OnDestroy()
         {
             if (uiFont != null) Destroy(uiFont);
-            if (outlineTexture != null) Destroy(outlineTexture);
-            if (creamTexture != null) Destroy(creamTexture);
         }
     }
 }

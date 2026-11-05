@@ -357,30 +357,24 @@ namespace TokenPet
                 desktop.x - overlay.StageOrigin.x,
                 desktop.y - overlay.StageOrigin.y,
                 desktop.width, desktop.height);
-            Color previous = GUI.color;
-            GUI.color = Ink;
-            GUI.DrawTexture(local, Texture2D.whiteTexture);
-            GUI.color = Cream;
-            GUI.DrawTexture(new Rect(local.x + 2f, local.y + 2f,
-                local.width - 4f, local.height - 4f), Texture2D.whiteTexture);
-            GUI.color = previous;
+            TokenPetArtStyle.Panel(local);
             string selectedId = contextId;
             GUI.Label(new Rect(local.x + 10f, local.y + 5f, 158f, 22f),
                 FurnitureName(selectedId), contextStyle);
-            if (GUI.Button(new Rect(local.x + 8f, local.y + 29f, 160f, 28f),
+            if (ContextButton(new Rect(local.x + 8f, local.y + 29f, 160f, 28f),
                 FurnitureActionLabel(selectedId), buttonStyle))
             {
                 if (views.TryGetValue(selectedId, out FurnitureView selected))
                     RequestUse(selected);
                 contextId = null;
             }
-            if (GUI.Button(new Rect(local.x + 8f, local.y + 61f, 160f, 28f),
+            if (ContextButton(new Rect(local.x + 8f, local.y + 61f, 160f, 28f),
                 "移動位置（再拖曳）", buttonStyle))
             {
                 moveArmedId = selectedId;
                 contextId = null;
             }
-            if (GUI.Button(new Rect(local.x + 8f, local.y + 93f, 160f, 28f),
+            if (ContextButton(new Rect(local.x + 8f, local.y + 93f, 160f, 28f),
                 "收回家具", buttonStyle))
             {
                 ipc?.Send(new RendererEvent
@@ -404,6 +398,14 @@ namespace TokenPet
                 item = view.data.id,
                 action = "use"
             });
+        }
+
+        private static bool ContextButton(Rect rect, string label, GUIStyle style)
+        {
+            bool hover = rect.Contains(Event.current.mousePosition);
+            TokenPetArtStyle.RoundRect(rect, hover ? new Color32(240, 222, 195, 255) :
+                new Color32(248, 239, 224, 255), 6f);
+            return GUI.Button(rect, label, style);
         }
 
         private static string FurnitureName(string id) => (id ?? "").ToLowerInvariant() switch
@@ -475,6 +477,13 @@ namespace TokenPet
             };
             BuildArt(view.visual, item.id, view.data.width, view.data.height);
             view.mainRenderer = view.visual.GetComponentInChildren<SpriteRenderer>(true);
+            if (view.mainRenderer != null)
+            {
+                Bounds artBounds = TokenPetProceduralArt.VisibleBounds(view.mainRenderer, view.root);
+                TokenPetProceduralArt.ContactShadow(view.root,
+                    new Vector2(artBounds.center.x, artBounds.min.y + WorldUnitsPerPixel),
+                    new Vector2(artBounds.size.x * 0.84f, 7f * WorldUnitsPerPixel));
+            }
             PositionView(view);
             return view;
         }
@@ -608,6 +617,7 @@ namespace TokenPet
             SpriteRenderer renderer = art.AddComponent<SpriteRenderer>();
             renderer.sprite = sprite;
             renderer.sortingOrder = 3;
+            art.AddComponent<TokenPetAccessoryResources>().Own(sprite);
 
             float targetWidth = Mathf.Max(40f, widthPixels) * WorldUnitsPerPixel;
             float targetHeight = Mathf.Max(30f, heightPixels) * WorldUnitsPerPixel;
@@ -632,7 +642,7 @@ namespace TokenPet
                 alignment = TextAnchor.MiddleLeft
             };
             contextStyle.normal.textColor = Ink;
-            buttonStyle = new GUIStyle(GUI.skin.button)
+            buttonStyle = new GUIStyle(GUI.skin.label)
             {
                 font = font,
                 fontSize = 12,

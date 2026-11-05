@@ -28,20 +28,18 @@ namespace TokenPet
     }
 
     /// <summary>
-    /// Compact data-driven shop drawn with IMGUI. This deliberately avoids a
-    /// uGUI Canvas: Unity's stencil/UI material path is unreliable inside the
-    /// chroma-key layered desktop window used by this PoC.
+    /// Compact data-driven IMGUI shop, composed on the same transparent desktop
+    /// stage as the character. Python retains catalog and purchase authority.
     /// </summary>
     public sealed class TokenPetShopPanel : MonoBehaviour
     {
-        private static readonly Color Ink = new Color32(79, 42, 20, 255);
-        private static readonly Color Cream = new Color32(255, 244, 210, 255);
-        private static readonly Color Header = new Color32(246, 185, 66, 255);
-        private static readonly Color Card = new Color32(255, 249, 231, 255);
-        private static readonly Color CardAlt = new Color32(250, 235, 199, 255);
-        private static readonly Color Accent = new Color32(242, 154, 62, 255);
-        private static readonly Color Green = new Color32(130, 184, 102, 255);
-        private static readonly Color Pink = new Color32(238, 139, 143, 255);
+        private static readonly Color Ink = TokenPetArtStyle.Ink;
+        private static readonly Color Header = new Color32(244, 224, 190, 255);
+        private static readonly Color Card = new Color32(255, 253, 247, 255);
+        private static readonly Color CardAlt = new Color32(246, 236, 220, 255);
+        private static readonly Color Accent = new Color32(239, 196, 134, 255);
+        private static readonly Color Green = new Color32(176, 197, 157, 255);
+        private static readonly Color Pink = new Color32(230, 178, 163, 255);
 
         private TokenPetIpcClient ipc;
         private GameObject petRoot;
@@ -194,8 +192,7 @@ namespace TokenPet
             }
 
             const float panelX = 340f;
-            Fill(new Rect(panelX, 0f, 380f, 300f), new Color32(123, 67, 30, 255));
-            Fill(new Rect(panelX + 3f, 3f, 374f, 294f), Cream);
+            TokenPetArtStyle.Panel(new Rect(panelX, 0f, 380f, 300f), 12f, false);
             Fill(new Rect(panelX + 3f, 3f, 374f, 42f), Header);
 
             string title = category switch
@@ -212,11 +209,11 @@ namespace TokenPet
                 new Rect(680f, 7f, 30f, 28f), "×", Pink, actionStyle);
 
             Fill(new Rect(348f, 49f, 364f, 29f), CardAlt);
-            if (DrawButton(new Rect(351f, 52f, 113f, 23f), "配件", Card, tabStyle))
+            if (DrawButton(new Rect(351f, 52f, 113f, 23f), "配件", category == "accessory" ? Accent : Card, tabStyle))
                 SelectCategory("accessory");
-            if (DrawButton(new Rect(472f, 52f, 113f, 23f), "食物", Card, tabStyle))
+            if (DrawButton(new Rect(472f, 52f, 113f, 23f), "食物", category == "food" ? Accent : Card, tabStyle))
                 SelectCategory("food");
-            if (DrawButton(new Rect(593f, 52f, 113f, 23f), "家具", Card, tabStyle))
+            if (DrawButton(new Rect(593f, 52f, 113f, 23f), "家具", category == "furniture" ? Accent : Card, tabStyle))
                 SelectCategory("furniture");
 
             List<TokenPetShopItem> visible = VisibleItems();
@@ -333,7 +330,7 @@ namespace TokenPet
             if (Contains(payload.equipped_items, item.id) || payload.equipped == item.id)
                 return Pink;
             if (item.category == "furniture" && Contains(payload.owned_furniture, item.id))
-                return new Color32(159, 181, 232, 255);
+                return new Color32(173, 195, 201, 255);
             return item.category == "food" ? Accent : Green;
         }
 
@@ -379,16 +376,14 @@ namespace TokenPet
 
         private static bool DrawButton(Rect rect, string label, Color background, GUIStyle style)
         {
-            Fill(rect, background);
+            bool hover = GUI.enabled && rect.Contains(Event.current.mousePosition);
+            Fill(rect, hover ? Color.Lerp(background, Ink, 0.06f) : background);
             return GUI.Button(rect, label, style);
         }
 
         private static void Fill(Rect rect, Color color)
         {
-            Color previous = GUI.color;
-            GUI.color = color;
-            GUI.DrawTexture(rect, Texture2D.whiteTexture);
-            GUI.color = previous;
+            TokenPetArtStyle.RoundRect(rect, color, 6f);
         }
     }
 }

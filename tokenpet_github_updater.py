@@ -28,11 +28,17 @@ REQUIRED_PACKAGE_FILES = (
 )
 
 
-def parse_version(value: str) -> tuple[int, int, int]:
+def parse_version(value: str) -> tuple:
     import re
 
-    parts = [int(part) for part in re.findall(r"\d+", str(value))[:3]]
-    return tuple((parts + [0, 0, 0])[:3])
+    match = re.fullmatch(r"[vV]?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?", str(value))
+    if not match:
+        raise ValueError("Invalid release version")
+    numbers = tuple(int(part or 0) for part in match.groups()[:3])
+    prerelease = match.group(4)
+    identifiers = tuple((0, int(part)) if part.isdigit() else (1, part)
+                        for part in prerelease.split(".")) if prerelease else ()
+    return numbers + (1 if prerelease is None else 0, identifiers)
 
 
 def find_newer_release(
@@ -58,7 +64,11 @@ def find_newer_release(
         if release.get("draft") or (release.get("prerelease") and not include_prerelease):
             continue
         version = str(release.get("tag_name", "")).lstrip("vV")
-        if parse_version(version) <= parse_version(current_version):
+        try:
+            rank = parse_version(version)
+        except ValueError:
+            continue
+        if rank <= parse_version(current_version):
             continue
         asset = next(
             (
@@ -71,7 +81,7 @@ def find_newer_release(
         )
         if asset is None:
             continue
-        candidates.append((parse_version(version), release, asset, version))
+        candidates.append((rank, release, asset, version))
 
     if not candidates:
         return None
@@ -127,7 +137,9 @@ def download_and_verify(release: dict, destination: Path, progress=None) -> str:
         raise
 
 
-def launch_external_installer(archive: Path, install_dir: Path, parent_pid: int) -> None:
+def launch_external_installer(archive: Path, install_dir: Path, parent_pid: int, *, standalone=False) -> None:
+    if getattr(sys, "frozen", False):
+        raise RuntimeError("請從完整整合包的 run_unity_preview.cmd 啟動後再更新")
     updater = Path(__file__).resolve()
     command = [
         sys.executable,
@@ -140,6 +152,8 @@ def launch_external_installer(archive: Path, install_dir: Path, parent_pid: int)
         "--parent-pid",
         str(parent_pid),
     ]
+    if standalone:
+        command.append("--standalone")
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     subprocess.Popen(
         command,
@@ -165,13 +179,26 @@ def _wait_for_process(pid: int, timeout_seconds: int = 45) -> None:
     if os.name != "nt" or pid <= 0:
         return
     synchronize = 0x00100000
-    handle = ctypes.windll.kernel32.OpenProcess(synchronize, False, pid)
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    kernel32.WaitForSingleObject.restype = ctypes.c_ulong
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.restype = ctypes.c_int
+    handle = kernel32.OpenProcess(synchronize, False, pid)
     if not handle:
+        if kernel32.GetLastError() not in (0, 87):
+            raise OSError("Cannot determine whether the existing app has exited")
         return
     try:
-        ctypes.windll.kernel32.WaitForSingleObject(handle, timeout_seconds * 1000)
+        result = kernel32.WaitForSingleObject(handle, int(timeout_seconds * 1000))
+        if result == 258:
+            raise TimeoutError("The existing app did not exit; update was not installed")
+        if result != 0:
+            raise OSError("Unable to wait for the existing app to exit")
     finally:
-        ctypes.windll.kernel32.CloseHandle(handle)
+        kernel32.CloseHandle(handle)
 
 
 def _safe_extract(archive: Path, destination: Path) -> Path:
@@ -196,13 +223,19 @@ def _safe_extract(archive: Path, destination: Path) -> Path:
 
 
 def _replace_tree(package_root: Path, install_dir: Path, backup_dir: Path) -> None:
-    files = [path for path in package_root.rglob("*") if path.is_file()]
+    files = sorted(path for path in package_root.rglob("*") if path.is_file())
     created = []
     backed_up = []
+    temporary_files = []
     try:
         for source in files:
             relative = source.relative_to(package_root)
+            if any(part == ".env" or part.startswith(".env.") or part == ".git" or part.startswith(".credentials")
+                   for part in relative.parts):
+                continue
             target = install_dir / relative
+            if not target.resolve().is_relative_to(install_dir.resolve()):
+                raise RuntimeError(f"Update target escapes the install directory: {relative}")
             if target.exists():
                 backup = backup_dir / relative
                 backup.parent.mkdir(parents=True, exist_ok=True)
@@ -212,6 +245,7 @@ def _replace_tree(package_root: Path, install_dir: Path, backup_dir: Path) -> No
                 created.append(target)
             target.parent.mkdir(parents=True, exist_ok=True)
             incoming = target.with_name(target.name + ".update-new")
+            temporary_files.append(incoming)
             shutil.copy2(source, incoming)
             last_error = None
             for _ in range(40):
@@ -226,48 +260,75 @@ def _replace_tree(package_root: Path, install_dir: Path, backup_dir: Path) -> No
                 raise last_error
     except Exception:
         _write_log("copy failed; restoring previous package")
+        rollback_errors = []
         for target in reversed(created):
-            target.unlink(missing_ok=True)
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                rollback_errors.append(target)
         for backup, target in reversed(backed_up):
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(backup, target)
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(backup, target)
+            except OSError:
+                rollback_errors.append(target)
+        if rollback_errors:
+            raise RuntimeError(f"Update rollback needs recovery from {backup_dir}")
         raise
+    finally:
+        for incoming in temporary_files:
+            try:
+                incoming.unlink(missing_ok=True)
+            except OSError:
+                _write_log("Unable to remove an update staging file")
 
 
-def _start_tokenpet(install_dir: Path) -> None:
-    launcher = install_dir / "run_unity_preview.cmd"
+def _start_tokenpet(install_dir: Path, *, standalone=False) -> None:
+    launcher = install_dir / "emojinoko_monitor.py"
     if not launcher.exists():
         _write_log(f"launcher missing after update attempt: {launcher}")
         return
+    command = [sys.executable, os.fspath(launcher), "--unity-poc"]
+    if standalone:
+        command.append("--standalone")
+    environment = os.environ.copy()
+    environment["TOKENPET_DEVELOPER_MODE"] = "0"
     subprocess.Popen(
-        ["cmd.exe", "/c", os.fspath(launcher)],
+        command,
         cwd=os.fspath(install_dir),
         close_fds=True,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        env=environment,
     )
 
 
-def apply_update(archive: Path, install_dir: Path, parent_pid: int) -> None:
+def apply_update(archive: Path, install_dir: Path, parent_pid: int, *, standalone=False) -> None:
     local_base = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "TokenPet" / "updates"
     local_base.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     stage = Path(tempfile.mkdtemp(prefix="stage-", dir=local_base))
-    backup = local_base / f"backup-{stamp}"
+    backup = local_base / f"backup-{stamp}-{stage.name}"
+    installed = False
+    parent_exited = False
     try:
         _write_log(f"preparing archive={archive} install_dir={install_dir}")
         package_root = _safe_extract(archive, stage)
         _wait_for_process(parent_pid)
+        parent_exited = True
         time.sleep(1.0)
         _replace_tree(package_root, install_dir, backup)
+        installed = True
         _write_log(f"update installed; backup={backup}")
-        _start_tokenpet(install_dir)
+        _start_tokenpet(install_dir, standalone=standalone)
     except Exception as exc:
         _write_log(f"update failed: {exc!r}")
-        _start_tokenpet(install_dir)
+        if parent_exited:
+            _start_tokenpet(install_dir, standalone=standalone)
         raise
     finally:
         shutil.rmtree(stage, ignore_errors=True)
-        archive.unlink(missing_ok=True)
+        if installed:
+            archive.unlink(missing_ok=True)
 
 
 def main() -> int:
@@ -276,10 +337,11 @@ def main() -> int:
     parser.add_argument("--archive", type=Path)
     parser.add_argument("--install-dir", type=Path)
     parser.add_argument("--parent-pid", type=int, default=0)
+    parser.add_argument("--standalone", action="store_true")
     args = parser.parse_args()
     if not args.apply or args.archive is None or args.install_dir is None:
         parser.error("--apply, --archive and --install-dir are required")
-    apply_update(args.archive.resolve(), args.install_dir.resolve(), args.parent_pid)
+    apply_update(args.archive.resolve(), args.install_dir.resolve(), args.parent_pid, standalone=args.standalone)
     return 0
 
 

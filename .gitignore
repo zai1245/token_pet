@@ -33,6 +33,7 @@ MANIFEST
 
 # User credentials & local savegames (VERY IMPORTANT: Keep private)
 .credentials
+.credentials.*
 .credentials.old
 *.old
 *.tmp
@@ -45,6 +46,8 @@ scratch/
 
 # Environments
 .env
+.env.*
+!.env.example
 .venv
 env/
 venv/

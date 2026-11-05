@@ -9,6 +9,7 @@ import zipfile
 
 import tokenpet_github_updater as updater
 from tokenpet_version import VERSION
+from tools import package_integrated
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +24,87 @@ class _Response(io.BytesIO):
 
 
 class GitHubUpdaterTests(unittest.TestCase):
+    def test_package_rejects_old_compiled_unity_even_when_source_version_changed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            build = Path(directory)
+            assembly = build / "TokenPetUnity_Data/Managed/Assembly-CSharp.dll"
+            assembly.parent.mkdir(parents=True)
+            assembly.write_bytes("unity-poc-0.0.1-preview".encode("utf-16-le"))
+            with mock.patch.object(package_integrated, "BUILD", build):
+                with self.assertRaisesRegex(RuntimeError, "stale"):
+                    package_integrated.verify_compiled_renderer(VERSION)
+                assembly.write_bytes(f"unity-poc-{VERSION}".encode("utf-16-le"))
+                package_integrated.verify_compiled_renderer(VERSION)
+
+    def test_semantic_versions_include_stable_and_numeric_prereleases(self):
+        versions = ["0.8.9-preview.2", "0.8.9-preview.10", "0.8.9", "0.8.10-preview"]
+        self.assertEqual(versions, sorted(reversed(versions), key=updater.parse_version))
+        with self.assertRaises(ValueError):
+            updater.parse_version("not-a-release")
+
+    def test_failed_replacement_restores_all_old_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package, install, backup = (root / name for name in ("package", "install", "backup"))
+            package.mkdir()
+            install.mkdir()
+            for name in ("a.txt", "b.txt"):
+                (package / name).write_text("new")
+                (install / name).write_text("old")
+            original_replace = updater.os.replace
+
+            def replace(source, target):
+                if Path(target).name == "b.txt":
+                    raise PermissionError("file busy")
+                return original_replace(source, target)
+
+            with mock.patch.object(updater.os, "replace", side_effect=replace), \
+                    mock.patch.object(updater.time, "sleep"), mock.patch.object(updater, "_write_log"):
+                with self.assertRaises(PermissionError):
+                    updater._replace_tree(package, install, backup)
+            self.assertEqual(["old", "old"], [(install / name).read_text() for name in ("a.txt", "b.txt")])
+            self.assertEqual([], list(install.glob("*.update-new")))
+
+    def test_package_cannot_overwrite_local_secrets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package, install = root / "package", root / "install"
+            package.mkdir()
+            install.mkdir()
+            for name in (".credentials", ".credentials.bak", ".env", ".env.local"):
+                (package / name).write_text("shipped")
+                (install / name).write_text("local")
+            updater._replace_tree(package, install, root / "backup")
+            self.assertTrue(all(path.read_text() == "local" for path in install.iterdir()))
+
+    def test_parent_timeout_keeps_archive_and_does_not_start_duplicate_app(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "package.zip"
+            archive.write_bytes(b"package")
+            with mock.patch.dict(updater.os.environ, {"LOCALAPPDATA": directory}), \
+                    mock.patch.object(updater, "_safe_extract", return_value=root), \
+                    mock.patch.object(updater, "_wait_for_process", side_effect=TimeoutError), \
+                    mock.patch.object(updater, "_replace_tree") as replace, \
+                    mock.patch.object(updater, "_start_tokenpet") as restart, \
+                    mock.patch.object(updater, "_write_log"):
+                with self.assertRaises(TimeoutError):
+                    updater.apply_update(archive, root / "install", 123)
+            self.assertTrue(archive.exists())
+            replace.assert_not_called()
+            restart.assert_not_called()
+
+    def test_restart_retains_offline_mode_and_disables_developer_rewards(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "emojinoko_monitor.py").touch()
+            with mock.patch.object(updater.subprocess, "Popen") as launch:
+                updater._start_tokenpet(root, standalone=True)
+            command = launch.call_args.args[0]
+            self.assertIn("--standalone", command)
+            self.assertIn("--unity-poc", command)
+            self.assertEqual("0", launch.call_args.kwargs["env"]["TOKENPET_DEVELOPER_MODE"])
+
     def test_python_and_unity_release_versions_match(self):
         bootstrap = (
             ROOT

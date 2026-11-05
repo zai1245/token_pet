@@ -1,6 +1,7 @@
 import tkinter as tk
 import math
 import os
+from usage_widget import ManagedToplevel, post_to_ui
 import random
 import time
 
@@ -2421,7 +2422,7 @@ class ShopWindow:
         self.build_ui = build_ui
         self.win = None
         if build_ui:
-            self.win = tk.Toplevel(parent)
+            self.win = ManagedToplevel(parent)
             self.win.title("地瓜球配件與道具商店")
             self.win.geometry("380x480")
             self.win.configure(bg="#1e1e2e")
@@ -2730,7 +2731,7 @@ class ShopWindow:
                 break
         if item_id in {
             "scholar_cap", "cat_ears", "crown", "halo", "gentleman_hat",
-            "demon_horns", "wizard_hat", "clover_sprout", "char_helmet",
+            "demon_horns", "wizard_hat", "clover_sprout", "char_helmet", "sakura_hairpin",
         }:
             return "head"
         if item_id == "bowtie":
@@ -3100,6 +3101,8 @@ class ShopWindow:
         self.monitor.save_pet_savegame()
         self.coins_label.config(text=self._get_coins_text())
 
+        self._update_button_states()
+
     def _show_shop_error(self, message):
         if self.build_ui:
             messagebox.showerror("地瓜幣不足", message)
@@ -3111,7 +3114,7 @@ def time_ms():
 
 class RPSWindow:
     def __init__(self, parent, monitor):
-        self.win = tk.Toplevel(parent)
+        self.win = ManagedToplevel(parent)
         self.win.title("猜拳對決！")
         self.win.geometry("260x100")
         self.win.configure(bg="#1e1e2e")
@@ -3121,8 +3124,10 @@ class RPSWindow:
         self.monitor = monitor
         
         # Make it modal/transient
-        self.win.transient(parent)
+        if parent.state() != "withdrawn":
+            self.win.transient(parent)
         self.win.grab_set()
+        self.win.protocol("WM_DELETE_WINDOW", self.cancel)
         
         tk.Label(
             self.win,
@@ -3155,6 +3160,11 @@ class RPSWindow:
         if self.monitor:
             self.monitor.handle_rps_choice(user_choice)
 
+    def cancel(self):
+        if self.monitor:
+            self.monitor.cancel_rps()
+        self.win.destroy()
+
 
 # ──────────────────────────────────────────────────
 # AI 尬聊設定視窗 (AIChatConfigWindow)
@@ -3162,18 +3172,19 @@ class RPSWindow:
 class AIChatConfigWindow:
     def __init__(self, parent, monitor):
         self.monitor = monitor
-        self.win = tk.Toplevel(parent)
+        self.win = ManagedToplevel(parent)
         self.win.title("⚙️ AI 尬聊設定")
-        self.win.geometry("380x320")
+        self.win.geometry("380x380")
         self.win.configure(bg="#181825")
         self.win.resizable(False, False)
         self.win.attributes("-topmost", True)
-        self.win.transient(parent)
+        if parent.state() != "withdrawn":
+            self.win.transient(parent)
         self.win.grab_set()
         
         cfg = self.monitor.pet_data.setdefault("ai_config", {
             "ccr_url": "http://ainexus.phison.com:5155/api/external/v1/chat/completions",
-            "api_key": "AINX-9BA1E6EC81F095A0F9CE8E16F543E557925591303398051A57F5176DB7289874",
+            "api_key": os.environ.get("TOKENPET_AI_API_KEY", ""),
             "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
             "auto_chatter": True,
             "chatter_interval_min": 15
@@ -3188,6 +3199,13 @@ class AIChatConfigWindow:
         self.url_entry = tk.Entry(f1, font=("Consolas", 8), bg="#313244", fg="#cdd6f4", insertbackground="#cdd6f4")
         self.url_entry.insert(0, cfg.get("ccr_url", "http://ainexus.phison.com:5155/api/external/v1/chat/completions"))
         self.url_entry.pack(fill=tk.X, pady=2)
+
+        key_frame = tk.Frame(self.win, bg="#181825")
+        key_frame.pack(fill=tk.X, padx=20, pady=4)
+        tk.Label(key_frame, text="API Key（僅儲存於本機）:", bg="#181825", fg="#cdd6f4").pack(anchor="w")
+        self.api_key_entry = tk.Entry(key_frame, show="*", bg="#313244", fg="#cdd6f4", insertbackground="#cdd6f4")
+        self.api_key_entry.insert(0, cfg.get("api_key") or os.environ.get("TOKENPET_AI_API_KEY", ""))
+        self.api_key_entry.pack(fill=tk.X)
         
         # Model Name
         f2 = tk.Frame(self.win, bg="#181825")
@@ -3227,18 +3245,20 @@ class AIChatConfigWindow:
         from tkinter import messagebox
         url = self.url_entry.get().strip()
         model = self.model_entry.get().strip()
+        api_key = self.api_key_entry.get().strip()
         def _run():
-            ok, msg = self.monitor.test_ccr_connection(url, model)
+            ok, msg = self.monitor.test_ccr_connection(url, model, api_key)
             if ok:
-                self.win.after(0, lambda: messagebox.showinfo("連線成功", "🎉 AI Nexus 連線測試成功！"))
+                post_to_ui(self.win, lambda: messagebox.showinfo("連線成功", "🎉 AI Nexus 連線測試成功！", parent=self.win))
             else:
-                self.win.after(0, lambda: messagebox.showerror("連線失敗", f"無法連線到伺服器：\n{msg}"))
+                post_to_ui(self.win, lambda: messagebox.showerror("連線失敗", f"無法連線到伺服器：\n{msg}", parent=self.win))
         threading.Thread(target=_run, daemon=True).start()
 
     def save_config(self):
         cfg = self.monitor.pet_data.setdefault("ai_config", {})
         cfg["ccr_url"] = self.url_entry.get().strip()
         cfg["model"] = self.model_entry.get().strip()
+        cfg["api_key"] = self.api_key_entry.get().strip()
         cfg["auto_chatter"] = self.auto_var.get()
         try:
             cfg["chatter_interval_min"] = max(3, int(self.interval_spin.get()))
@@ -3254,7 +3274,7 @@ class AIChatConfigWindow:
 class AIChatWindow:
     def __init__(self, parent, monitor):
         self.monitor = monitor
-        self.win = tk.Toplevel(parent)
+        self.win = ManagedToplevel(parent)
         self.win.title("💬 找地瓜球尬聊")
         self.win.geometry("380x520")
         self.win.configure(bg="#181825")
@@ -3369,9 +3389,12 @@ class AIChatWindow:
         self._on_send()
 
     def _on_send(self):
+        if getattr(self, "_sending", False):
+            return
         text = self.entry.get().strip()
         if not text:
             return
+        self._sending = True
             
         self.entry.delete(0, tk.END)
         self._append_message("user", text)
@@ -3385,10 +3408,15 @@ class AIChatWindow:
         
         def _on_reply(reply_text, error=None):
             def _ui():
+                if not self.win.winfo_exists():
+                    return
+                self._sending = False
                 self.send_btn.config(state=tk.NORMAL, bg="#fab387")
                 if error:
                     self.status_lbl.config(text="🔴 離線/錯誤", fg="#f38ba8")
                     self._append_message("sys", f"無法連接 CCR 伺服器：{error}")
+                    if reply_text:
+                        self._append_message("pet", reply_text)
                 else:
                     self.status_lbl.config(text="🟢 CCR 在線", fg="#a6e3a1")
                     self._append_message("pet", reply_text)

@@ -395,6 +395,9 @@ namespace TokenPet
                 else
                     Debug.LogWarning($"Missing paired accessory Resources/{pairedPath}; using front view.");
             }
+            TokenPetAccessoryResources resources = root.AddComponent<TokenPetAccessoryResources>();
+            foreach (SpriteRenderer renderer in root.GetComponentsInChildren<SpriteRenderer>(true))
+                resources.Own(renderer.sprite);
             return root;
         }
 
@@ -508,6 +511,9 @@ namespace TokenPet
                 new Vector2(0.5f, 0f), 100f);
             GameObject crown = new("Crown");
             crown.AddComponent<SpriteRenderer>().sprite = sprite;
+            TokenPetAccessoryResources resources = crown.AddComponent<TokenPetAccessoryResources>();
+            resources.Own(sprite);
+            resources.Own(texture);
             return crown;
         }
 
@@ -635,5 +641,24 @@ namespace TokenPet
         }
 
         private static Color Blue() => new Color32(116, 199, 236, 255);
+    }
+
+    // Destroying a GameObject does not release Sprite.Create / Texture2D
+    // allocations. Only register generated objects; imported art is shared.
+    public sealed class TokenPetAccessoryResources : MonoBehaviour
+    {
+        private readonly HashSet<UnityEngine.Object> owned = new();
+
+        public void Own(UnityEngine.Object resource)
+        {
+            if (resource != null) owned.Add(resource);
+        }
+
+        private void OnDestroy()
+        {
+            foreach (UnityEngine.Object resource in owned)
+                if (resource != null) Destroy(resource);
+            owned.Clear();
+        }
     }
 }

@@ -32,6 +32,11 @@ python -m pip install -r requirements-dev.txt
 只執行應用程式、不打包時，可以改裝 `requirements.txt`。`.credentials`、
 存檔、`.env` 與本機 log 都不得 commit。
 
+設定更新透過 `config_store.py` 的跨程序鎖與原子替換共用 `.credentials`，
+並保留 `.credentials.bak` 作為恢復副本。登入的「記住我」只控制帳密是否儲存；
+登出會從主檔與恢復副本移除帳密。AI Key 需在 AI 設定或
+`TOKENPET_AI_API_KEY` 環境變數中自行提供。
+
 ## 3. 先驗證舊版 renderer
 
 ```powershell

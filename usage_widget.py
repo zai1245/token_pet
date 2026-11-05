@@ -6,6 +6,7 @@ import json
 import base64
 import os
 import sys
+import math
 from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib
@@ -85,6 +86,92 @@ def _request_with_retry(method, url, **kwargs):
     raise last_exc
 
 
+def normalize_usage_data(rows):
+    """Validate a monthly response before changing counters or awarding coins."""
+    if not isinstance(rows, list):
+        raise ValueError("Monthly usage must be a list")
+    normalized = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("Invalid monthly usage row")
+        item = dict(row)
+        for name in ("price", "request", "prompt_tokens", "complete_tokens"):
+            value = item.get(name)
+            if value is None:
+                value = 0
+            if isinstance(value, bool):
+                raise ValueError(f"Invalid {name}")
+            number = float(value)
+            if not math.isfinite(number) or number < 0:
+                raise ValueError(f"Invalid {name}")
+            if name == "price":
+                item[name] = number
+            else:
+                count = int(value)
+                if isinstance(value, float) and count != value:
+                    raise ValueError(f"Invalid {name}")
+                item[name] = count
+        normalized.append(item)
+    return normalized
+
+
+def post_to_ui(root, callback, *args):
+    if getattr(root, "_tokenpet_closed", False) is True:
+        return False
+    try:
+        root.after(0, callback, *args)
+        return True
+    except (tk.TclError, RuntimeError):
+        return False  # A background response may arrive after the window closed.
+
+
+class ManagedToplevel(tk.Toplevel):
+    """Cancel this window's scheduled animation callbacks when it closes."""
+
+    def __init__(self, *args, **kwargs):
+        self._owned_timers = set()
+        self._timer_closing = False
+        super().__init__(*args, **kwargs)
+
+    def after(self, ms, func=None, *args):
+        if self._timer_closing:
+            return None
+        if func is None:
+            return super().after(ms)
+        holder = [None]
+        def run():
+            self._owned_timers.discard(holder[0])
+            if not self._timer_closing:
+                func(*args)
+        token = super().after(ms, run)
+        holder[0] = token
+        self._owned_timers.add(token)
+        return token
+
+    def after_cancel(self, token):
+        self._owned_timers.discard(token)
+        return super().after_cancel(token)
+
+    def destroy(self):
+        if self._timer_closing:
+            return
+        self._timer_closing = True
+        for token in list(self._owned_timers):
+            try:
+                self.after_cancel(token)
+            except tk.TclError:
+                pass
+        super().destroy()
+
+
+def cancel_pending_ui(root):
+    try:
+        for token in root.tk.splitlist(root.tk.call("after", "info")):
+            root.after_cancel(token)
+    except tk.TclError:
+        pass
+
+
 # ──────────────────────────────────────────────────
 # 帳號密碼與配置管理工具函式
 # 使用 base64 做簡單編碼，避免明文儲存
@@ -100,22 +187,21 @@ def _decode(text):
 def load_config():
     """讀取完整配置字典"""
     try:
-        if os.path.exists(CRED_FILE):
-            with open(CRED_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception:
-        pass
+        from config_store import JsonConfigStore
+        return JsonConfigStore(CRED_FILE).load()
+    except (OSError, ValueError) as error:
+        _debug_log(f"Settings read failed: {type(error).__name__}")
     return {}
 
 def save_config(config_dict):
     """更新並儲存配置字典"""
     try:
-        data = load_config()
-        data.update(config_dict)
-        with open(CRED_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-    except Exception:
-        pass
+        from config_store import JsonConfigStore
+        JsonConfigStore(CRED_FILE).update(config_dict)
+        return True
+    except (OSError, ValueError, TypeError) as error:
+        _debug_log(f"Settings write failed: {type(error).__name__}")
+        return False
 
 def save_credentials(email, password):
     """將帳號密碼編碼後儲存至配置"""
@@ -133,14 +219,11 @@ def load_credentials():
 
 def delete_credentials():
     """刪除儲存的帳號密碼（但保留其他視窗位置、快捷鍵設定）"""
-    data = load_config()
-    data.pop("email", None)
-    data.pop("password", None)
     try:
-        with open(CRED_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-    except Exception:
-        pass
+        from config_store import JsonConfigStore
+        JsonConfigStore(CRED_FILE).update({}, remove=("email", "password"))
+    except (OSError, ValueError) as error:
+        _debug_log(f"Credentials removal failed: {type(error).__name__}")
 
 
 # ===================== 全域快捷鍵管理 (Windows API) =====================
@@ -168,6 +251,7 @@ class HotkeyManager:
         self.thread = None
         self.thread_id = None
         self.hotkey_id = 1
+        self._ready = threading.Event()
         if IS_WINDOWS:
             self.user32 = ctypes.windll.user32
             self.kernel32 = ctypes.windll.kernel32
@@ -175,18 +259,29 @@ class HotkeyManager:
     def start(self):
         if not IS_WINDOWS:
             return
+        if self.thread and self.thread.is_alive():
+            return
+        self._ready.clear()
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
-        while self.thread_id is None:
-            time.sleep(0.01)
+        if not self._ready.wait(2):
+            _debug_log("Hotkey message queue did not start")
 
     def _run(self):
+        try:
+            self._message_loop()
+        finally:
+            self.thread_id = None
+            self._ready.set()
+
+    def _message_loop(self):
         msg = wintypes.MSG()
         # 強制系統為此執行緒建立訊息佇列
         self.user32.PeekMessageW(ctypes.byref(msg), 0, 0, 0, 0)
         self.thread_id = self.kernel32.GetCurrentThreadId()
+        self._ready.set()
 
-        while self.user32.GetMessageW(ctypes.byref(msg), 0, 0, 0) != 0:
+        while self.user32.GetMessageW(ctypes.byref(msg), 0, 0, 0) > 0:
             if msg.message == WM_HOTKEY:
                 if self.on_hotkey_pressed:
                     self.on_hotkey_pressed()
@@ -331,7 +426,7 @@ class LoginWindow:
             self.error_label.config(text="⏳ 自動登入中...", fg=ACCENT_COLOR)
             self.login_btn.config(text="登入中...", state=tk.DISABLED)
             threading.Thread(target=self._try_login,
-                             args=(saved_email, saved_password), daemon=True).start()
+                             args=(saved_email, saved_password, True), daemon=True).start()
 
     def _do_login(self):
         """使用者按下登入按鈕時觸發"""
@@ -344,9 +439,9 @@ class LoginWindow:
         self.error_label.config(text="")
         # 背景執行登入，避免 UI 卡住
         threading.Thread(target=self._try_login,
-                         args=(email, password), daemon=True).start()
+                         args=(email, password, self.remember_var.get()), daemon=True).start()
 
-    def _try_login(self, email, password):
+    def _try_login(self, email, password, remember=False):
         """實際呼叫 LDAP 登入 API"""
         try:
             r = _request_with_retry(
@@ -357,26 +452,28 @@ class LoginWindow:
             )
             if r.status_code == 200:
                 data = r.json()
+                if not isinstance(data, dict) or not data.get("token") or not data.get("phison_token"):
+                    raise ValueError("登入回應缺少用量憑證")
                 # 依據 checkbox 決定是否儲存帳密
-                if self.remember_var.get():
+                if remember:
                     save_credentials(email, password)
                 else:
                     delete_credentials()
                 # 登入成功，回傳 token、phison_token、姓名、帳密
-                self.root.after(0, self.on_login_success,
+                post_to_ui(self.root, self.on_login_success,
                                 data.get("token", ""),
                                 data.get("phison_token", ""),
                                 data.get("name", ""),
                                 email, password)
             else:
                 msg = r.json().get("detail", "登入失敗！")
-                self.root.after(0, self._login_failed, msg)
+                post_to_ui(self.root, self._login_failed, str(msg))
         except Exception as e:
-            self.root.after(0, self._login_failed, str(e))
+            post_to_ui(self.root, self._login_failed, str(e))
 
     def _login_failed(self, msg):
         """登入失敗時顯示錯誤訊息並恢復按鈕"""
-        self.error_label.config(text=f"❌ {msg[:50]}", fg=PINK_COLOR)
+        self.error_label.config(text=f"❌ {str(msg)[:50]}", fg=PINK_COLOR)
         self.login_btn.config(text="登入", state=tk.NORMAL)
 
     def _on_drag_start(self, event):
@@ -454,6 +551,7 @@ class UsageWidget:
 
         # 資料快取
         self._usage_data = []
+        self._refresh_lock = threading.Lock()
         self._auth_data = {}
 
         # UI 狀態變數
@@ -470,14 +568,14 @@ class UsageWidget:
             self.hotkey_manager = HotkeyManager(on_hotkey_pressed=self._on_hotkey_pressed)
             self.hotkey_manager.start()
 
-        # 載入儲存的快捷鍵 (第一次開啟預設為 F7)
-        if "hotkey" in config:
-            self.hotkey_config = config["hotkey"]
+        # 統計視窗使用獨立的 F8，避免搶走桌寵的 F7。
+        if "stats_hotkey" in config:
+            self.hotkey_config = config["stats_hotkey"]
         else:
             self.hotkey_config = {
                 "modifiers": [],
-                "vk": 118,
-                "display": "F7"
+                "vk": 119,
+                "display": "F8"
             }
         if self.hotkey_config and self.hotkey_manager:
             self._register_saved_hotkey()
@@ -778,91 +876,59 @@ class UsageWidget:
         _start_app()
 
     def _auto_relogin(self):
-        """Token 過期時在背景自動重新登入，使用者無感"""
         try:
-            r = _request_with_retry(
-                "post",
-                f"{OPENWEBUI_BASE_URL}/api/v1/auths/ldap",
-                json={"user": self.email, "password": self.password},
-                timeout=10
-            )
-            if r.status_code == 200:
-                data = r.json()
-                # 更新 token
-                self.TOKEN = data.get("token", "")
-                self.PHISON_TOKEN = data.get("phison_token", "")
-                # 若有儲存帳密則同步更新
-                if os.path.exists(CRED_FILE):
-                    save_credentials(self.email, self.password)
-                # 重新抓取資料
-                self._fetch_and_update()
-            else:
-                self.root.after(0, self._show_error, "自動重新登入失敗")
-                self.root.after(2000, self._logout)
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-            self.root.after(0, self._show_error, f"⚠️ 網路暫時不穩，將於下次自動重試\n({e.__class__.__name__})")
-        except Exception as e:
-            self.root.after(0, self._show_error, str(e))
+            r = _request_with_retry("post", f"{OPENWEBUI_BASE_URL}/api/v1/auths/ldap",
+                                    json={"user": self.email, "password": self.password}, timeout=10)
+            r.raise_for_status()
+            data = r.json()
+            if not isinstance(data, dict) or not data.get("token") or not data.get("phison_token"):
+                raise ValueError("Login did not return usage credentials")
+            self.TOKEN, self.PHISON_TOKEN = data["token"], data["phison_token"]
+            return True
+        except (requests.RequestException, ValueError, TypeError):
+            post_to_ui(self.root, self._show_error, "登入已過期，請重新登入")
+            return False
 
     def _fetch_and_update(self):
-        """從 API 抓取用量資料並更新 UI（在背景執行緒中呼叫）"""
+        """Refresh once at a time and retry an expired session at most once."""
+        lock = getattr(self, "_refresh_lock", None)
+        if lock is None:
+            lock = self._refresh_lock = threading.Lock()
+        if not lock.acquire(blocking=False):
+            return
         try:
-            headers = {
-                "Authorization": f"Bearer {self.TOKEN}",
-                "Content-Type": "application/json",
-            }
-            cookies = {"token": self.TOKEN}
-
-            # 先打 /api/usage 初始化（伺服器端需要先呼叫此 API 才能取得用量資料）
-            # 這支 API 失敗不應中斷整個流程，只記錄即可
-            try:
-                _request_with_retry(
-                    "get",
-                    f"{OPENWEBUI_BASE_URL}/api/usage",
-                    headers=headers,
-                    cookies=cookies,
-                    timeout=10
-                )
-            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-                pass
-
-            # 呼叫公司客製的本月用量 API（此 API 實測回應時間約 12~15 秒，故 timeout 設寬鬆一些）
-            r = _request_with_retry(
-                "post",
-                f"{OPENWEBUI_BASE_URL}/api/v1/phison/user/usage/monthly",
-                headers=headers, cookies=cookies,
-                json={"key": self.PHISON_TOKEN}, timeout=30
-            )
-
-            # Token 過期（401）→ 自動重新登入
-            if r.status_code == 401:
-                self.root.after(0, self.status_label.config,
-                                {"text": "🔄 Token 過期，自動重新登入...", "fg": YELLOW_COLOR})
-                threading.Thread(target=self._auto_relogin, daemon=True).start()
-                return
-
-            usage_data = r.json() if r.status_code == 200 else []
-
-            # 抓取帳號資訊（取得姓名等）
-            r2 = _request_with_retry(
-                "get",
-                f"{OPENWEBUI_BASE_URL}/api/v1/auths/",
-                headers=headers, timeout=8
-            )
-            auth_data = r2.json() if r2.status_code == 200 else {}
-
-            # 快取資料供圖表刷新使用
-            self._usage_data = usage_data
-            self._auth_data = auth_data
-
-            # 切回主執行緒更新 UI
-            self.root.after(0, self._update_ui, usage_data, auth_data)
-
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-            self.root.after(0, self._show_error,
-                             f"⚠️ 網路暫時不穩，將於下次自動重試\n({e.__class__.__name__})")
-        except Exception as e:
-            self.root.after(0, self._show_error, str(e))
+            for attempt in range(2):
+                headers = {"Authorization": f"Bearer {self.TOKEN}", "Content-Type": "application/json"}
+                cookies = {"token": self.TOKEN}
+                try:
+                    _request_with_retry("get", f"{OPENWEBUI_BASE_URL}/api/usage",
+                                        headers=headers, cookies=cookies, timeout=10)
+                except (requests.ConnectionError, requests.Timeout):
+                    pass
+                r = _request_with_retry("post", f"{OPENWEBUI_BASE_URL}/api/v1/phison/user/usage/monthly",
+                                        headers=headers, cookies=cookies,
+                                        json={"key": self.PHISON_TOKEN}, timeout=30)
+                if r.status_code == 401 and attempt == 0:
+                    if not self._auto_relogin():
+                        return
+                    continue
+                r.raise_for_status()
+                usage_data = normalize_usage_data(r.json())
+                auth_data = {}
+                try:
+                    auth = _request_with_retry("get", f"{OPENWEBUI_BASE_URL}/api/v1/auths/",
+                                              headers=headers, timeout=8)
+                    if auth.status_code == 200 and isinstance(auth.json(), dict):
+                        auth_data = auth.json()
+                except (requests.RequestException, ValueError):
+                    pass  # Optional profile data must not discard valid usage.
+                self._usage_data, self._auth_data = usage_data, auth_data
+                post_to_ui(self.root, self._update_ui, usage_data, auth_data)
+                break
+        except (requests.RequestException, ValueError, TypeError, OverflowError) as error:
+            post_to_ui(self.root, self._show_error, f"用量更新失敗（{type(error).__name__}）")
+        finally:
+            lock.release()
 
     def _refresh_charts(self):
         """使用快取資料重新渲染 UI（checkbox 切換、折疊切換時使用）"""
@@ -874,10 +940,6 @@ class UsageWidget:
         # 清除舊的 widget
         for widget in self.data_frame.winfo_children():
             widget.destroy()
-
-        if not usage_data:
-            self._show_error("無資料")
-            return
 
         # 帳號與月份標題
         name = auth_data.get("name", self.user_name)
@@ -1035,7 +1097,7 @@ class UsageWidget:
 
     def _on_hotkey_pressed(self):
         """全域快捷鍵觸發回呼"""
-        self.root.after(0, self._toggle_window_visibility)
+        post_to_ui(self.root, self._toggle_window_visibility)
 
     def _on_focus_in(self, event):
         """焦點進入事件"""
@@ -1099,6 +1161,8 @@ class UsageWidget:
     def _on_destroy(self, event):
         """視窗銷毀時清理快捷鍵資源"""
         if event.widget == self.root:
+            self.root._tokenpet_closed = True
+            cancel_pending_ui(self.root)
             if self.hotkey_manager:
                 self.hotkey_manager.stop()
 
@@ -1134,7 +1198,7 @@ class UsageWidget:
         
         if clear:
             self.hotkey_config = None
-            save_config({"hotkey": None})
+            save_config({"stats_hotkey": None})
             if self.hotkey_manager:
                 self.hotkey_manager.unregister()
         
@@ -1188,7 +1252,7 @@ class UsageWidget:
             "vk": keycode,
             "display": display_str
         }
-        save_config({"hotkey": self.hotkey_config})
+        save_config({"stats_hotkey": self.hotkey_config})
 
         if self.hotkey_manager:
             self._register_saved_hotkey()

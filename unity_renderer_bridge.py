@@ -99,12 +99,17 @@ class UnityRendererBridge:
             )
             return False
 
-        self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._server.bind(("127.0.0.1", 0))
-        self._server.listen(1)
-        self._server.settimeout(0.5)
-        port = self._server.getsockname()[1]
+        try:
+            self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self._server.bind(("127.0.0.1", 0))
+            self._server.listen(1)
+            self._server.settimeout(0.5)
+            port = self._server.getsockname()[1]
+        except OSError as exc:
+            self._queue_event({"event_name": "start_failed", "message": str(exc)})
+            self._close_server()
+            return False
         print(f"[Unity Bridge] listening on 127.0.0.1:{port}")
 
         command = [
@@ -192,6 +197,8 @@ class UnityRendererBridge:
         board_text: str = "",
         overtime: bool = False,
     ) -> bool:
+        if isinstance(board_text, (list, tuple)):
+            board_text = "\n".join(str(line) for line in board_text)
         payload = {
             "command": "snapshot",
             "state": state,
@@ -217,16 +224,18 @@ class UnityRendererBridge:
             "furniture": furniture or "",
             "effects": effects or "",
             "show_board": bool(show_board),
-            "board_text": board_text or "",
+            "board_text": str(board_text or ""),
             "overtime": bool(overtime),
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         now = time.monotonic()
         if encoded == self._last_snapshot and now - self._last_snapshot_at < 1.0:
             return True
+        if not self.send(payload):
+            return False
         self._last_snapshot = encoded
         self._last_snapshot_at = now
-        return self.send(payload)
+        return True
 
     def move_window(self, x: float, y: float) -> bool:
         """Move the native Unity overlay to a Python-owned desktop position."""
@@ -394,7 +403,7 @@ class UnityRendererBridge:
                         "message": "Unity renderer closed the IPC connection",
                     }
                 )
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             if not self._stop_event.is_set():
                 print(f"[Unity Bridge] socket error: {exc!r}")
                 self._queue_event({"event_name": "connection_lost", "message": str(exc)})

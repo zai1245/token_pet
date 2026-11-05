@@ -86,8 +86,10 @@ namespace TokenPet
         private StreamWriter writer;
         private Thread ioThread;
         private volatile bool stopping;
+        private volatile bool connected;
+        private volatile bool disconnected;
 
-        public bool IsConnected => client != null && client.Connected;
+        public bool IsConnected => connected;
 
         private void Awake()
         {
@@ -106,6 +108,11 @@ namespace TokenPet
 
         private void Update()
         {
+            if (disconnected && !stopping)
+            {
+                Application.Quit();
+                return;
+            }
             while (commands.TryDequeue(out RendererCommand command))
             {
                 if (command.command == "shutdown")
@@ -156,6 +163,7 @@ namespace TokenPet
                     AutoFlush = true,
                     NewLine = "\n"
                 };
+                connected = true;
 
                 Send(new RendererEvent
                 {
@@ -170,14 +178,27 @@ namespace TokenPet
                     if (line == null)
                         break;
 
-                    RendererCommand command = JsonUtility.FromJson<RendererCommand>(line);
-                    if (command != null && !string.IsNullOrEmpty(command.command))
-                        commands.Enqueue(command);
+                    try
+                    {
+                        RendererCommand command = JsonUtility.FromJson<RendererCommand>(line);
+                        if (command != null && !string.IsNullOrEmpty(command.command))
+                            commands.Enqueue(command);
+                    }
+                    catch (ArgumentException)
+                    {
+                        Debug.LogWarning("TokenPet ignored a malformed IPC command.");
+                    }
                 }
             }
             catch (Exception exception)
             {
                 Debug.LogWarning($"TokenPet IPC disconnected: {exception.Message}");
+            }
+            finally
+            {
+                connected = false;
+                disconnected = !stopping;
+                try { client?.Close(); } catch { }
             }
         }
 

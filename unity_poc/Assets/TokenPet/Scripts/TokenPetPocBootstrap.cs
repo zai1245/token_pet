@@ -6,7 +6,7 @@ namespace TokenPet
 {
     public sealed class TokenPetPocBootstrap : MonoBehaviour
     {
-        public const string RendererVersion = "0.8.9-preview";
+        public const string RendererVersion = "0.8.10-preview";
 
         private enum MotionState
         {

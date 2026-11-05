@@ -208,14 +208,15 @@ class UnityLauncherTests(unittest.TestCase):
     def test_launcher_defaults_to_company_monitoring_and_keeps_explicit_offline(self):
         # Execute the real .cmd against a recording script, without opening UI
         # or contacting the company service. Also cover the pythonw path.
-        for args in ([], ["debug"], ["offline", "debug"], ["debug", "offline"], ["shop", "debug"]):
+        for args in ([], ["debug"], ["offline", "debug"], ["debug", "offline"], ["shop", "debug"], ["dev", "debug"]):
             with self.subTest(args=args), self.launcher_directory() as directory:
                 root = Path(directory)
                 launcher = root / "run_unity_preview.cmd"
                 shutil.copy2(ROOT / launcher.name, launcher)
                 output = root / "argv.json"
                 (root / "emojinoko_monitor.py").write_text(
-                    "import json, pathlib, sys\n"
+                    "import json, pathlib, sys, os\n"
+                    "pathlib.Path('mode.txt').write_text(os.environ.get('TOKENPET_DEVELOPER_MODE', ''))\n"
                     "pathlib.Path('argv.json').write_text(json.dumps(sys.argv[1:]))\n",
                     encoding="utf-8",
                 )
@@ -235,3 +236,4 @@ class UnityLauncherTests(unittest.TestCase):
                 self.assertIn("--unity-poc", actual)
                 self.assertEqual("offline" in args, "--standalone" in actual)
                 self.assertEqual("shop" in args, "--debug-open-shop" in actual)
+                self.assertEqual("1" if "dev" in args else "0", (root / "mode.txt").read_text())

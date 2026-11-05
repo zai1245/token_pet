@@ -18,6 +18,7 @@ DIST = ROOT / "dist"
 SOURCE_FILES = (
     "DEVELOPMENT.md",
     "GITHUB_RELEASES.md",
+    "FUNCTIONAL_REVIEW.md",
     "README.md",
     "requirements.txt",
     "collect_debug_logs.cmd",
@@ -29,6 +30,7 @@ SOURCE_FILES = (
     "tokenpet_version.py",
     "unity_renderer_bridge.py",
     "usage_widget.py",
+    "config_store.py",
 )
 
 RUNTIME_ENTRIES = (
@@ -59,6 +61,15 @@ def renderer_version() -> str:
     return renderer
 
 
+def verify_compiled_renderer(version: str) -> None:
+    assembly = BUILD / "TokenPetUnity_Data" / "Managed" / "Assembly-CSharp.dll"
+    # The Mono player's hello packet embeds this constant in its string table.
+    # Reading source version alone can accidentally ship an older compiled HUD.
+    marker = f"unity-poc-{version}".encode("utf-16-le")
+    if not assembly.is_file() or marker not in assembly.read_bytes():
+        raise RuntimeError("Compiled Unity renderer is missing or stale; rebuild it before packaging")
+
+
 def copy_entry(source: Path, destination: Path) -> None:
     if source.is_dir():
         shutil.copytree(source, destination)
@@ -76,9 +87,12 @@ def main() -> None:
     )
     args = parser.parse_args()
     version = renderer_version()
+    verify_compiled_renderer(version)
     package_name = f"TokenPetIntegrated-v{version}-dev-win-x64"
     package_dir = DIST / package_name
     archive_path = DIST / f"{package_name}.zip"
+    if package_dir.resolve().parent != DIST.resolve() or archive_path.resolve().parent != DIST.resolve():
+        raise RuntimeError("Package outputs must stay directly inside the distribution directory")
 
     if (package_dir.exists() or archive_path.exists()) and not args.replace:
         raise RuntimeError(

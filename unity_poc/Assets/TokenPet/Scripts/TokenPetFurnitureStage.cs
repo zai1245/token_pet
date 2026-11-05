@@ -90,7 +90,7 @@ namespace TokenPet
             HashSet<string> incoming = new(StringComparer.OrdinalIgnoreCase);
             foreach (TokenPetFurnitureItem item in payload?.items ?? Array.Empty<TokenPetFurnitureItem>())
             {
-                if (string.IsNullOrWhiteSpace(item.id))
+                if (item == null || string.IsNullOrWhiteSpace(item.id))
                     continue;
                 incoming.Add(item.id);
                 if (!views.TryGetValue(item.id, out FurnitureView view))
@@ -116,6 +116,10 @@ namespace TokenPet
                 views.Remove(id);
                 if (contextId == id)
                     contextId = null;
+                if (draggingId == id)
+                    draggingId = null;
+                if (moveArmedId == id)
+                    moveArmedId = null;
             }
         }
 

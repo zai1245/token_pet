@@ -11,6 +11,7 @@ import ctypes
 import math
 import random
 import re
+import uuid
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,7 +23,8 @@ from usage_widget import (
     load_credentials, delete_credentials, LoginWindow,
     OPENWEBUI_BASE_URL, WINDOW_BG, TEXT_COLOR, ACCENT_COLOR,
     PINK_COLOR, YELLOW_COLOR, GREEN_COLOR, TITLE_COLOR,
-    IS_WINDOWS, HotkeyManager, _encode, _decode, _request_with_retry
+    IS_WINDOWS, HotkeyManager, _encode, _decode, _request_with_retry,
+    normalize_usage_data, post_to_ui, ManagedToplevel, cancel_pending_ui
 )
 
 # 匯入我們開發的遊戲引擎與繪圖模組
@@ -61,7 +63,7 @@ def map_unity_throw_velocity(pointer_vx, desktop_vy):
 def _accessory_slot(item_id):
     if item_id in {
         "scholar_cap", "cat_ears", "crown", "halo", "gentleman_hat",
-        "demon_horns", "wizard_hat", "clover_sprout", "char_helmet",
+        "demon_horns", "wizard_hat", "clover_sprout", "char_helmet", "sakura_hairpin",
     }:
         return "head"
     if item_id == "bowtie":
@@ -139,16 +141,21 @@ if IS_WINDOWS:
         lii = LASTINPUTINFO()
         lii.cbSize = ctypes.sizeof(LASTINPUTINFO)
         if ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii)):
-            millis = ctypes.windll.kernel32.GetTickCount() - lii.dwTime
-            return max(0, millis)
+            # Both counters are unsigned DWORDs and wrap every 49.7 days.
+            return (ctypes.windll.kernel32.GetTickCount() - lii.dwTime) & 0xFFFFFFFF
         return 0
 
     def is_screen_locked():
         """偵測 Windows 系統桌面是否被鎖定 (如 Win+L 鎖屏、登出或螢幕保護中)"""
         # 開啟當前輸入桌面，若處於鎖屏安全桌面，此 API 會回傳 0 (None)
-        h_desktop = ctypes.windll.user32.OpenInputDesktop(0, False, 0x0100) # DESKTOP_SWITCHDESKTOP = 0x0100
+        user32 = ctypes.windll.user32
+        user32.OpenInputDesktop.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+        user32.OpenInputDesktop.restype = ctypes.c_void_p
+        user32.CloseDesktop.argtypes = [ctypes.c_void_p]
+        user32.CloseDesktop.restype = ctypes.c_int
+        h_desktop = user32.OpenInputDesktop(0, False, 0x0100)
         if h_desktop:
-            ctypes.windll.user32.CloseDesktop(h_desktop)
+            user32.CloseDesktop(h_desktop)
             return False
         return True
 else:
@@ -169,6 +176,8 @@ def check_single_instance(app_id="TokenPet_Instance"):
     global _global_app_mutex
     if not IS_WINDOWS:
         return True
+    if _global_app_mutex:
+        return True
     try:
         import hashlib
         exe_path = sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__)
@@ -176,10 +185,16 @@ def check_single_instance(app_id="TokenPet_Instance"):
         mutex_name = f"{app_id}_{path_hash}"
         
         kernel32 = ctypes.windll.kernel32
+        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.restype = ctypes.c_bool
         _global_app_mutex = kernel32.CreateMutexW(None, False, mutex_name)
         last_error = kernel32.GetLastError()
         ERROR_ALREADY_EXISTS = 183
         if last_error == ERROR_ALREADY_EXISTS:
+            kernel32.CloseHandle(_global_app_mutex)
+            _global_app_mutex = None
             return False  # 已有實例運行中
         return True
     except Exception:
@@ -197,6 +212,8 @@ class EmojinokoMonitor:
         email/password: 用於 Token 過期時背景無感重新登入
         """
         self.root = root
+        self._closed = False
+        self._usage_fetch_lock = threading.Lock()
         
         # 啟動時先隱藏主視窗，防止在 Windows (0,0) 處閃爍空白方塊
         try:
@@ -1120,6 +1137,8 @@ class EmojinokoMonitor:
                             "x": mx,
                             "y": my,
                             "text": text_content,
+                            "w": getattr(m_win, "width", 180),
+                            "h": getattr(m_win, "height", 160),
                             "deleted_at": time.time()
                         })
                         self.pet_data["deleted_memos"] = deleted_list[:15]
@@ -1953,7 +1972,7 @@ class EmojinokoMonitor:
         elif self.pet.state == "sleep_futon":
             decay_amount *= 0.50
         # 蝴蝶結減少 10% 消化速度
-        elif self.pet_data.get("equipped_accessory") == "bowtie":
+        elif "bowtie" in self._equipped_items():
             decay_amount *= 0.90
             
         # 🤸 彈簧床彈跳運動期間飽食度消耗變為 3 倍
@@ -1961,7 +1980,7 @@ class EmojinokoMonitor:
             if "trampoline" in self.spawned_furniture_wins:
                 t_win = self.spawned_furniture_wins["trampoline"]
                 tx = t_win.winfo_x()
-                pet_cx = self.root.winfo_x() + 170
+                pet_cx = self._get_pet_desktop_position()[0] + 170
                 if tx + 10 <= pet_cx <= tx + 130:
                     decay_amount *= 3.0
             
@@ -2030,19 +2049,12 @@ class EmojinokoMonitor:
                     self.create_text_popup("肚子餓...效率減半", 170, 140, color=PINK_COLOR)
                 
                 # 配件加成套用
-                equipped = self.pet_data.get("equipped_accessory")
-                if equipped == "sunglasses":
-                    multiplier *= 1.10
-                elif equipped == "crown":
-                    multiplier *= 1.15
-                elif equipped == "cat_ears":
-                    multiplier *= 1.15
-                elif equipped == "gentleman_hat":
-                    multiplier *= 1.15
-                elif equipped == "demon_horns":
-                    multiplier *= 1.15
-                elif equipped == "star_sunglasses":
-                    multiplier *= 1.10
+                for equipped in self._equipped_items():
+                    multiplier *= {
+                        "sunglasses": 1.10, "crown": 1.15, "cat_ears": 1.15,
+                        "gentleman_hat": 1.15, "demon_horns": 1.15,
+                        "star_sunglasses": 1.10,
+                    }.get(equipped, 1.0)
                     
                 # 摸摸 Fever 模式產量加倍
                 if getattr(self.pet, "fever_timer", 0) > 0:
@@ -2116,27 +2128,14 @@ class EmojinokoMonitor:
         self.create_text_popup(f"❌ {err_type}", 170, 120, color=PINK_COLOR)
 
     def simulate_usage(self):
-        """模擬用量增加，用於離線/外網環境下測試地瓜球餵食與產幣"""
+        """Offline feeding rewards never modify the company's usage baselines."""
         if not self.STANDALONE:
             return
-        # 模擬 Prompt Token 增加 1500，Completion Token 增加 800
-        fake_prompt = self.pet_data.get("last_prompt_baseline", 0) + 1500
-        fake_complete = self.pet_data.get("last_complete_baseline", 0) + 800
-        
-        # 構造模擬 Open WebUI 傳回的 JSON 數據結構
-        fake_usage = [
-            {
-                "model": "gpt-4o",
-                "price": 0.05,
-                "request": 1,
-                "prompt_tokens": fake_prompt,
-                "complete_tokens": fake_complete,
-                "api": "no"
-            }
-        ]
-        self.create_text_popup("🧪 模擬測試中...", 170, 120, color=ACCENT_COLOR)
-        # 直接調用用量差額處理邏輯
-        self._process_usage_delta(fake_usage)
+        self.create_text_popup("🧪 離線投餵", 170, 120, color=ACCENT_COLOR)
+        for _ in range(3):
+            self._spawn_token_particle(500 * TOKEN_TO_XP_RATIO, 500 * TOKEN_TO_SATIETY)
+        self.pet_data["coins"] = self.pet_data.get("coins", 0) + int(800 * TOKEN_TO_COIN)
+        self.save_pet_savegame()
 
     def get_virtual_screen_bounds(self):
         """取得整個虛擬螢幕 (所有螢幕組合) 的左右邊界"""
@@ -2207,6 +2206,11 @@ class EmojinokoMonitor:
         if getattr(self, "STANDALONE", False):
             self.is_fetching = False
             return
+        lock = getattr(self, "_usage_fetch_lock", None)
+        if lock is None:
+            lock = self._usage_fetch_lock = threading.Lock()
+        if not lock.acquire(blocking=False):
+            return
         self.is_fetching = True
         try:
             headers = {
@@ -2234,12 +2238,19 @@ class EmojinokoMonitor:
 
             # Token 過期自動重新登入
             if r.status_code == 401:
-                self._auto_relogin()
-                return
+                if not self._auto_relogin():
+                    return
+                headers["Authorization"] = f"Bearer {self.TOKEN}"
+                cookies["token"] = self.TOKEN
+                r = _request_with_retry(
+                    "post", f"{OPENWEBUI_BASE_URL}/api/v1/phison/user/usage/monthly",
+                    headers=headers, cookies=cookies,
+                    json={"key": self.PHISON_TOKEN}, timeout=30,
+                )
 
             r.raise_for_status()
-            usage_data = r.json()
-            self.root.after(0, self._process_usage_delta, usage_data)
+            usage_data = normalize_usage_data(r.json())
+            post_to_ui(self.root, self._process_usage_delta, usage_data)
         except Exception as e:
             import traceback
             print("\n=== [地瓜球對帳連線錯誤日誌] ===")
@@ -2248,13 +2259,19 @@ class EmojinokoMonitor:
             
             # 連線失敗時，將具體錯誤類型回傳給主執行緒，避免卡死在「對帳中」
             err_msg = "連線逾時" if "timeout" in str(e).lower() else f"對帳失敗: {type(e).__name__}"
-            self.root.after(0, self._show_fetch_error, err_msg)
+            post_to_ui(self.root, self._show_fetch_error, err_msg)
         finally:
             self.is_fetching = False
+            lock.release()
 
     def _process_usage_delta(self, usage_data):
         """在 GUI 主線程比對新用量與舊用量差額，並實作投餵事件"""
         if usage_data is None:
+            return
+        try:
+            usage_data = normalize_usage_data(usage_data)
+        except (TypeError, ValueError, OverflowError):
+            self._show_fetch_error("用量資料格式錯誤")
             return
 
         # 計算本月統計總數
@@ -2272,9 +2289,17 @@ class EmojinokoMonitor:
         # 讀取上一次儲存的基底用量
         baseline_prompt = self.pet_data.get("last_prompt_baseline", 0)
         baseline_complete = self.pet_data.get("last_complete_baseline", 0)
+        month = datetime.now().strftime("%Y-%m")
+        previous_month = self.pet_data.get("usage_month")
+        initialized = self.pet_data.get("usage_baseline_initialized",
+                                         baseline_prompt != 0 or baseline_complete != 0)
+        new_month = previous_month is not None and previous_month != month
+        legacy_empty_month = previous_month is None and total_prompt == total_complete == 0
+        self.pet_data["usage_month"] = month
+        self.pet_data["usage_baseline_initialized"] = True
 
         # 首次啟動：對齊基底，不進行投餵 (避免一開機地瓜球就吃太多撐死)
-        if baseline_prompt == 0 and baseline_complete == 0:
+        if not initialized:
             self.pet_data["last_prompt_baseline"] = total_prompt
             self.pet_data["last_complete_baseline"] = total_complete
             self.save_pet_savegame()
@@ -2284,7 +2309,7 @@ class EmojinokoMonitor:
             return
 
         # 跨月重置判定：新月份額度歸零
-        if total_prompt < baseline_prompt or total_complete < baseline_complete:
+        if new_month or legacy_empty_month:
             self.pet_data["last_prompt_baseline"] = total_prompt
             self.pet_data["last_complete_baseline"] = total_complete
             self.save_pet_savegame()
@@ -2296,7 +2321,7 @@ class EmojinokoMonitor:
         # ──────────────────────────────────────────────────
         # 1. 差額投餵：Prompt Token 差額轉化為食物掉落與經驗
         # ──────────────────────────────────────────────────
-        delta_prompt = total_prompt - baseline_prompt
+        delta_prompt = max(0, total_prompt - baseline_prompt)
         if delta_prompt > 0:
             # 每 500 個 Token 換算成一顆掉落食物球，上限 10 顆 (避免畫面太亂)
             feed_balls = min(10, max(1, delta_prompt // 500))
@@ -2319,20 +2344,18 @@ class EmojinokoMonitor:
         # ──────────────────────────────────────────────────
         # 2. 對話回饋：Completion Token 差額轉換為地瓜幣收益
         # ──────────────────────────────────────────────────
-        delta_complete = total_complete - baseline_complete
+        delta_complete = max(0, total_complete - baseline_complete)
         if delta_complete > 0:
             active_mult = 1.0
-            equipped = self.pet_data.get("equipped_accessory")
-            if equipped == "crown":
-                active_mult *= 1.15
-            elif equipped == "gentleman_hat":
-                active_mult *= 1.15
-            elif equipped == "demon_horns":
-                active_mult *= 1.15
-            elif equipped == "star_sunglasses":
-                active_mult *= 1.10
+            for equipped in self._equipped_items():
+                active_mult *= {"crown": 1.15, "gentleman_hat": 1.15,
+                                "demon_horns": 1.15, "star_sunglasses": 1.10}.get(equipped, 1.0)
                 
-            bonus_coins = int(delta_complete * TOKEN_TO_COIN * active_mult)
+            earned_coins = (delta_complete * TOKEN_TO_COIN * active_mult +
+                            self.pet_data.get("usage_coin_remainder", 0.0))
+            bonus_coins = math.floor(earned_coins + 1e-9)
+            # Small refresh deltas must earn the same as one larger refresh.
+            self.pet_data["usage_coin_remainder"] = round(max(0.0, earned_coins - bonus_coins), 9)
             if bonus_coins > 0:
                 self.pet_data["coins"] = self.pet_data.get("coins", 0) + bonus_coins
                 self.create_text_popup(f"+{bonus_coins} 🪙 (對話獎勵)", 170, 130, color=YELLOW_COLOR)
@@ -2356,20 +2379,21 @@ class EmojinokoMonitor:
     def _auto_relogin(self):
         """Token 過期背景無感重新登入"""
         try:
-            r = requests.post(
-                f"{OPENWEBUI_BASE_URL}/api/v1/auths/ldap",
+            r = _request_with_retry(
+                "post", f"{OPENWEBUI_BASE_URL}/api/v1/auths/ldap",
                 json={"user": self.email, "password": self.password},
                 timeout=8
             )
-            if r.status_code == 200:
-                data = r.json()
-                self.TOKEN = data.get("token", "")
-                self.PHISON_TOKEN = data.get("phison_token", "")
-                save_credentials(self.email, self.password)
-                # 重新抓取用量
-                threading.Thread(target=self._fetch_usage_api, daemon=True).start()
-        except Exception:
-            pass
+            r.raise_for_status()
+            data = r.json()
+            if not isinstance(data, dict) or not data.get("token") or not data.get("phison_token"):
+                raise ValueError("Login did not return usage credentials")
+            self.TOKEN = data["token"]
+            self.PHISON_TOKEN = data["phison_token"]
+            return True
+        except (requests.RequestException, ValueError, TypeError):
+            post_to_ui(self.root, self._show_fetch_error, "登入已過期，請重新登入")
+            return False
 
     # ──────────────────────────────────────────────────
     # 粒子系統與特效 (Particles)
@@ -2422,15 +2446,11 @@ class EmojinokoMonitor:
                 gained_satiety = p.get("satiety", 5.0)
                 
                 # 套用配件加成
-                equipped = self.pet_data.get("equipped_accessory")
-                if equipped == "scholar_cap":
-                    gained_xp *= 1.20  # 博士帽 +20% XP
-                elif equipped == "halo":
-                    gained_xp *= 1.20  # 天使光環 +20% XP
-                elif equipped == "crown":
-                    gained_xp *= 1.15  # 皇冠 +15% XP
-                elif equipped == "bandage":
-                    gained_satiety *= 1.30  # OK繃 +30% 飽食度
+                for equipped in self._equipped_items():
+                    gained_xp *= {"scholar_cap": 1.20, "halo": 1.20,
+                                  "crown": 1.15}.get(equipped, 1.0)
+                    if equipped == "bandage":
+                        gained_satiety *= 1.30
                     
                 # 摸摸 Fever 模式額外 XP 加乘
                 if getattr(self.pet, "fever_timer", 0) > 0:
@@ -2630,6 +2650,13 @@ class EmojinokoMonitor:
 
             class POINT(ctypes.Structure):
                 _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+            user32.MonitorFromPoint.argtypes = [POINT, ctypes.c_ulong]
+            user32.MonitorFromPoint.restype = ctypes.c_void_p
+            user32.MonitorFromWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+            user32.MonitorFromWindow.restype = ctypes.c_void_p
+            user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            user32.GetMonitorInfoW.restype = ctypes.c_int
 
             # A withdrawn Tk HWND can remain associated with the monitor it was
             # hidden on. Unity mode therefore selects the monitor from the
@@ -3164,6 +3191,8 @@ class EmojinokoMonitor:
 
     def play_rps(self):
         """開始猜拳小遊戲"""
+        if getattr(self, "_rps_active", False):
+            return
         if self.pet.state == "sleep":
             self.create_text_popup("💤 地瓜球正在睡覺...", 170, 120, color=YELLOW_COLOR)
             return
@@ -3174,6 +3203,8 @@ class EmojinokoMonitor:
             return
             
         # 扣除 5 地瓜幣並存檔
+        self._rps_active = True
+        self._rps_resolved = False
         self.pet_data["coins"] = coins - 5
         self.save_pet_savegame()
         self.create_text_popup("-5 🪙", 170, 120, color=PINK_COLOR)
@@ -3191,6 +3222,11 @@ class EmojinokoMonitor:
         """處理玩家的出拳抉擇"""
         if not self.root.winfo_exists():
             return
+        if (not getattr(self, "_rps_active", False) or
+                getattr(self, "_rps_resolved", False) or
+                user_choice not in {"rock", "scissors", "paper"}):
+            return
+        self._rps_resolved = True
             
         # 地瓜球隨機出拳
         pet_choice = random.choice(["rock", "scissors", "paper"])
@@ -3267,12 +3303,19 @@ class EmojinokoMonitor:
         self.root.after(3000, self._cleanup_rps)
         
     def _cleanup_rps(self):
+        self._rps_active = False
         if not self.root.winfo_exists():
             return
         self.pet.custom_board_text = None
         self.pet.show_board = False
         self.pet.eye_state = "normal"
         self.pet.mouth_state = "normal"
+
+    def cancel_rps(self):
+        if getattr(self, "_rps_active", False) and not getattr(self, "_rps_resolved", False):
+            self.pet_data["coins"] = self.pet_data.get("coins", 0) + 5
+            self.save_pet_savegame()
+        self._cleanup_rps()
 
     def open_ai_chat(self):
         """開啟與地瓜球的 AI 尬聊對話框 (雙擊或選單觸發)"""
@@ -3291,11 +3334,14 @@ class EmojinokoMonitor:
                 pass
         self.ai_chat_win = AIChatWindow(self.root, self)
 
-    def test_ccr_connection(self, url, model):
+    def test_ccr_connection(self, url, model, api_key=None):
         """測試 AI Nexus / LLM 伺服器連線"""
         try:
             cfg = self.pet_data.get("ai_config", {})
-            api_key = cfg.get("api_key", "AINX-9BA1E6EC81F095A0F9CE8E16F543E557925591303398051A57F5176DB7289874")
+            if api_key is None:
+                api_key = cfg.get("api_key") or os.environ.get("TOKENPET_AI_API_KEY", "")
+            if not api_key and "ainexus.phison.com" in url:
+                return False, "請先在 AI 設定填入自己的 API Key"
             payload = {
                 "model": model or "deepseek-ai/DeepSeek-V4-Flash-0731",
                 "max_tokens": 10,
@@ -3322,7 +3368,10 @@ class EmojinokoMonitor:
             try:
                 cfg = self.pet_data.get("ai_config", {})
                 url = cfg.get("ccr_url", "http://ainexus.phison.com:5155/api/external/v1/chat/completions")
-                api_key = cfg.get("api_key", "AINX-9BA1E6EC81F095A0F9CE8E16F543E557925591303398051A57F5176DB7289874")
+                api_key = cfg.get("api_key") or os.environ.get("TOKENPET_AI_API_KEY", "")
+                if not api_key and "ainexus.phison.com" in url:
+                    post_to_ui(self.root, callback, None, "請先在 AI 設定填入自己的 API Key")
+                    return
                 primary_model = cfg.get("model", "deepseek-ai/DeepSeek-V4-Flash-0731")
                 
                 # 動態 System Prompt 注入當前真實狀態
@@ -3385,7 +3434,8 @@ class EmojinokoMonitor:
                         last_err = e
                         continue
                         
-                if not reply:
+                offline_reply = not reply
+                if offline_reply:
                     if last_err:
                         # 離線可愛語料兜底
                         fallbacks = [
@@ -3398,9 +3448,10 @@ class EmojinokoMonitor:
                         reply = "咕嚕咕嚕～地瓜球打嗝了 (｡•ㅅ•｡)✨"
                         
                 self.ai_chat_history.append({"role": "assistant", "content": reply})
-                callback(reply, None)
+                post_to_ui(self.root, callback, reply,
+                           "AI 連線失敗，已切換離線回覆" if offline_reply else None)
             except Exception as e:
-                callback(None, str(e))
+                post_to_ui(self.root, callback, None, str(e))
                 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -3412,7 +3463,9 @@ class EmojinokoMonitor:
                 if not cfg.get("auto_chatter", True):
                     return
                 url = cfg.get("ccr_url", "http://ainexus.phison.com:5155/api/external/v1/chat/completions")
-                api_key = cfg.get("api_key", "AINX-9BA1E6EC81F095A0F9CE8E16F543E557925591303398051A57F5176DB7289874")
+                api_key = cfg.get("api_key") or os.environ.get("TOKENPET_AI_API_KEY", "")
+                if not api_key and "ainexus.phison.com" in url:
+                    return
                 model = cfg.get("model", "deepseek-ai/DeepSeek-V4-Flash-0731")
                 
                 system_prompt = f"""你是桌面寵物「地瓜球」(TokenPet)。主人稱呼「{self.user_name or '主人'}」，當前等級 Lv.{self.pet_data.get('level', 1)}。
@@ -3445,7 +3498,7 @@ class EmojinokoMonitor:
                             short_text = reply.strip().replace("\n", " ")
                             if len(short_text) > 30:
                                 short_text = short_text[:28] + "..."
-                            self.root.after(0, lambda: self.create_text_popup(short_text, 170, 100, color="#fab387"))
+                            post_to_ui(self.root, lambda: self.create_text_popup(short_text, 170, 100, color="#fab387"))
                 except Exception:
                     # 若主模型逾時，嘗試備用秒回模型
                     payload["model"] = "zai-org/GLM-5.3-Flash"
@@ -3466,7 +3519,7 @@ class EmojinokoMonitor:
                             short_text2 = reply2.strip().replace("\n", " ")
                             if len(short_text2) > 30:
                                 short_text2 = short_text2[:28] + "..."
-                            self.root.after(0, lambda: self.create_text_popup(short_text2, 170, 100, color="#fab387"))
+                            post_to_ui(self.root, lambda: self.create_text_popup(short_text2, 170, 100, color="#fab387"))
             except Exception:
                 pass
         threading.Thread(target=_worker, daemon=True).start()
@@ -3498,7 +3551,8 @@ class EmojinokoMonitor:
         self.hotkey_btn.pack(pady=2, ipadx=10)
         
         # 鎖定該彈窗
-        hk_win.transient(self.root)
+        if self.root.state() != "withdrawn":
+            hk_win.transient(self.root)
         hk_win.grab_set()
 
     def _get_hotkey_display_text(self):
@@ -3599,7 +3653,7 @@ class EmojinokoMonitor:
 
     def _on_hotkey_pressed(self):
         """快速鍵按下去，切換地瓜球顯示與隱藏"""
-        self.root.after(0, self._toggle_visibility)
+        post_to_ui(self.root, self._toggle_visibility)
 
     def _toggle_visibility(self):
         if getattr(self, "_unity_renderer_active", False):
@@ -3721,6 +3775,38 @@ class EmojinokoMonitor:
         """將地瓜球狀態寫回 .credentials"""
         save_config({"pet_game": self.pet_data})
 
+    def check_level_up(self):
+        """Apply all earned levels, including rewards spanning several levels."""
+        level = max(1, int(self.pet_data.get("level", 1)))
+        xp = float(self.pet_data.get("xp", 0.0))
+        if not math.isfinite(xp):
+            raise ValueError("Experience must be finite")
+        xp = max(0.0, xp)
+        initial = level
+        while xp >= PET_XP_THRESHOLD + (level - 1) * 50.0:
+            xp -= PET_XP_THRESHOLD + (level - 1) * 50.0
+            level += 1
+        self.pet_data.update(level=level, xp=xp)
+        if level > initial:
+            self.pet.vel_scale_y = 0.5
+            self.pet.vel_scale_x = -0.4
+            self.create_text_popup(f"LEVEL UP! Lv.{level}", 170, 85, color=PINK_COLOR)
+        self.save_pet_savegame()
+        return level > initial
+
+    def gain_pet_xp(self, amount):
+        if not math.isfinite(float(amount)):
+            raise ValueError("Experience must be finite")
+        self.pet_data["xp"] = self.pet_data.get("xp", 0.0) + max(0.0, float(amount))
+        self.check_level_up()
+
+    def _equipped_items(self):
+        slots = self.pet_data.get("equipped_accessories")
+        if isinstance(slots, dict):
+            return {item for item in slots.values() if item}
+        legacy = self.pet_data.get("equipped_accessory")
+        return {legacy} if legacy else set()
+
     def _sync_unity_furniture(self):
         bridge = getattr(self, "unity_renderer", None)
         if not getattr(self, "_unity_renderer_active", False) or bridge is None:
@@ -3762,7 +3848,7 @@ class EmojinokoMonitor:
             # 檢查如果地瓜球懸空，讓它平穩下墜
             m_info = self.get_current_monitor_info()
             landing_y = m_info["work_y"] + m_info["work_h"] - 300
-            if self.root.winfo_y() < landing_y - 10:
+            if self._get_pet_desktop_position()[1] < landing_y - 10:
                 self.pet.state = "fall"
                 self._fall_vy = 1.0
             else:
@@ -3803,7 +3889,9 @@ class EmojinokoMonitor:
 
     def spawn_memo(self, memo_id=None, x=None, y=None, text="", w=180, h=160):
         if not memo_id:
-            memo_id = f"memo_{int(time.time() * 1000)}"
+            memo_id = f"memo_{uuid.uuid4().hex}"
+        if memo_id in self.spawned_memo_wins:
+            return
         if x is None or y is None:
             # 在滑鼠指針附近生成
             x = self.root.winfo_pointerx() - 90
@@ -3852,16 +3940,13 @@ class EmojinokoMonitor:
             self.pet_data["deleted_memos"] = [m for m in deleted_list if m["id"] != memo_id]
             # 加回活動便利貼
             memos = self.pet_data.setdefault("memos", [])
-            memos.append({
-                "id": target_memo["id"],
-                "x": target_memo["x"],
-                "y": target_memo["y"],
-                "text": target_memo["text"]
-            })
+            restored = {key: value for key, value in target_memo.items() if key != "deleted_at"}
+            memos.append(restored)
             self.save_pet_savegame()
             
             # 在原座標重新生成便利貼視窗
-            self.spawn_memo(target_memo["id"], target_memo["x"], target_memo["y"], target_memo["text"])
+            self.spawn_memo(target_memo["id"], target_memo["x"], target_memo["y"],
+                            target_memo["text"], target_memo.get("w", 180), target_memo.get("h", 160))
             self.create_text_popup("已恢復便利貼 📝", 170, 100, color="#a6e3a1")
 
     def check_furniture_overlap(self):
@@ -3998,6 +4083,10 @@ class EmojinokoMonitor:
 
     def _on_destroy(self, event):
         if event.widget == self.root:
+            self._closed = True
+            self.root._tokenpet_closed = True
+            cancel_pending_ui(self.root)
+            self.save_pet_savegame()
             if getattr(self, "unity_renderer", None):
                 self.unity_renderer.stop()
                 self.unity_renderer = None
@@ -4226,45 +4315,37 @@ del /f /q "{backup_old_exe}" >nul 2>&1
     # backwards-reference, while all live menu/startup checks use GitHub.
     # ──────────────────────────────────────────────────
     def check_auto_update(self, manual=False):
-        """Check the configured GitHub Release channel without blocking Tk."""
-        if not manual:
-            last_check = float(self.config.get("last_github_update_check", 0) or 0)
-            if time.time() - last_check < 6 * 60 * 60:
+        lock = getattr(self, "_update_check_lock", None)
+        if lock is None:
+            lock = self._update_check_lock = threading.Lock()
+        if not lock.acquire(blocking=False):
+            return
+        try:
+            try:
+                last_check = float(self.config.get("last_github_update_check", 0) or 0)
+            except (TypeError, ValueError):
+                last_check = 0
+            if not manual and 0 <= time.time() - last_check < 6 * 60 * 60:
                 return
+            release = find_newer_release(GITHUB_REPOSITORY, CURRENT_VERSION,
+                                         include_prerelease=UPDATE_CHANNEL == "preview")
             checked_at = time.time()
             self.config["last_github_update_check"] = checked_at
             save_config({"last_github_update_check": checked_at})
-        try:
-            release = find_newer_release(
-                GITHUB_REPOSITORY,
-                CURRENT_VERSION,
-                include_prerelease=UPDATE_CHANNEL == "preview",
-            )
             if release is None:
                 if manual:
-                    self.root.after(
-                        0,
-                        lambda: messagebox.showinfo(
-                            "檢查更新",
-                            f"目前已是最新版本（v{CURRENT_VERSION}）。",
-                        ),
-                    )
+                    post_to_ui(self.root, lambda: messagebox.showinfo(
+                        "檢查更新", f"目前已是最新版本（v{CURRENT_VERSION}）。"))
                 return
-            print(
-                f"[GitHub Update] available={release['version']} "
-                f"asset={release['asset_name']}"
-            )
-            self.root.after(0, self._prompt_github_update, release)
-        except Exception as exc:
-            print(f"[GitHub Update] check failed: {exc!r}")
+            print(f"[GitHub Update] available={release['version']} asset={release['asset_name']}")
+            post_to_ui(self.root, self._prompt_github_update, release)
+        except Exception as error:
+            print(f"[GitHub Update] check failed: {type(error).__name__}")
             if manual:
-                self.root.after(
-                    0,
-                    lambda error=str(exc): messagebox.showerror(
-                        "檢查更新失敗",
-                        f"無法連線 GitHub Releases：\n{error}",
-                    ),
-                )
+                post_to_ui(self.root, lambda message=str(error): messagebox.showerror(
+                    "檢查更新失敗", f"無法連線 GitHub Releases：\n{message}"))
+        finally:
+            lock.release()
 
     def trigger_manual_update_check(self):
         """Run a GitHub update check from the Unity/Canvas context menu."""
@@ -4296,54 +4377,62 @@ del /f /q "{backup_old_exe}" >nul 2>&1
         ).start()
 
     def _download_github_update(self, release):
+        lock = getattr(self, "_update_download_lock", None)
+        if lock is None:
+            lock = self._update_download_lock = threading.Lock()
+        if not lock.acquire(blocking=False):
+            return
         try:
-            install_dir = os.path.dirname(os.path.abspath(__file__))
-            package_marker = os.path.join(install_dir, "PACKAGE_INFO.txt")
-            if not os.path.exists(package_marker):
+            try:
+                install_dir = os.path.dirname(os.path.abspath(__file__))
+                package_marker = os.path.join(install_dir, "PACKAGE_INFO.txt")
+                if not os.path.exists(package_marker):
+                    self.root.after(
+                        0,
+                        lambda: messagebox.showinfo(
+                            "開發環境不自動覆蓋",
+                            "目前是 Git 原始碼工作區。請使用 git pull 更新；\n"
+                            "從 GitHub Release 解壓的整合包才會執行自動替換。",
+                        ),
+                    )
+                    return
+
+                update_dir = os.path.join(
+                    os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+                    "TokenPet",
+                    "updates",
+                )
+                os.makedirs(update_dir, exist_ok=True)
+                archive = os.path.join(update_dir, uuid.uuid4().hex + "-" + os.path.basename(release["asset_name"]))
                 self.root.after(
                     0,
-                    lambda: messagebox.showinfo(
-                        "開發環境不自動覆蓋",
-                        "目前是 Git 原始碼工作區。請使用 git pull 更新；\n"
-                        "從 GitHub Release 解壓的整合包才會執行自動替換。",
+                    lambda: self.create_text_popup(
+                        "📥 正在下載並驗證新版…", 170, 120, color=ACCENT_COLOR
                     ),
                 )
-                return
+                digest = download_and_verify(release, Path(archive))
+                print(f"[GitHub Update] verified sha256={digest}")
+                launch_external_installer(Path(archive), Path(install_dir), os.getpid(), standalone=self.STANDALONE)
+                self.root.after(
+                    0,
+                    lambda: self.create_text_popup(
+                        "🚀 更新就緒，正在重新啟動…", 170, 120, color=GREEN_COLOR
+                    ),
+                )
+                self.root.after(700, self.root.destroy)
+            except Exception as exc:
+                import traceback
 
-            update_dir = os.path.join(
-                os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
-                "TokenPet",
-                "updates",
-            )
-            os.makedirs(update_dir, exist_ok=True)
-            archive = os.path.join(update_dir, release["asset_name"])
-            self.root.after(
-                0,
-                lambda: self.create_text_popup(
-                    "📥 正在下載並驗證新版…", 170, 120, color=ACCENT_COLOR
-                ),
-            )
-            digest = download_and_verify(release, Path(archive))
-            print(f"[GitHub Update] verified sha256={digest}")
-            launch_external_installer(Path(archive), Path(install_dir), os.getpid())
-            self.root.after(
-                0,
-                lambda: self.create_text_popup(
-                    "🚀 更新就緒，正在重新啟動…", 170, 120, color=GREEN_COLOR
-                ),
-            )
-            self.root.after(700, self.root.destroy)
-        except Exception as exc:
-            import traceback
-
-            traceback.print_exc()
-            self.root.after(
-                0,
-                lambda error=str(exc): messagebox.showerror(
-                    "GitHub 更新失敗",
-                    f"新版未套用，舊版仍可繼續使用。\n\n{error}",
-                ),
-            )
+                traceback.print_exc()
+                self.root.after(
+                    0,
+                    lambda error=str(exc): messagebox.showerror(
+                        "GitHub 更新失敗",
+                        f"新版未套用，舊版仍可繼續使用。\n\n{error}",
+                    ),
+                )
+        finally:
+            lock.release()
 
 
 # ──────────────────────────────────────────────────
@@ -4423,7 +4512,7 @@ class UnityBasketballHoop:
         self.monitor.basketball_hoop = None
 
 
-class BasketballHoop(tk.Toplevel):
+class BasketballHoop(ManagedToplevel):
     def __init__(self, parent_monitor):
         super().__init__(parent_monitor.root)
         self.monitor = parent_monitor
@@ -4596,7 +4685,7 @@ class BasketballHoop(tk.Toplevel):
 # ──────────────────────────────────────────────────
 # 接水果小遊戲視窗 (Fruit Catcher Game Window)
 # ──────────────────────────────────────────────────
-class FruitCatcherWindow(tk.Toplevel):
+class FruitCatcherWindow(ManagedToplevel):
     def __init__(self, parent_monitor):
         super().__init__(parent_monitor.root)
         self.monitor = parent_monitor
@@ -4652,6 +4741,10 @@ class FruitCatcherWindow(tk.Toplevel):
             self.finish_game()
 
     def finish_game(self):
+        if getattr(self, "_settled", False):
+            return
+        self._settled = True
+        self.game_over = True
         coins_won = max(5, self.score // 4)
         xp_won = max(10, self.score * 2)
         self.monitor.pet_data["coins"] = self.monitor.pet_data.get("coins", 0) + coins_won
@@ -4805,7 +4898,7 @@ class FruitCatcherWindow(tk.Toplevel):
 # ──────────────────────────────────────────────────
 # 幸運拉霸機小遊戲視窗 (Slot Machine Window)
 # ──────────────────────────────────────────────────
-class SlotMachineWindow(tk.Toplevel):
+class SlotMachineWindow(ManagedToplevel):
     def __init__(self, parent_monitor):
         super().__init__(parent_monitor.root)
         self.monitor = parent_monitor
@@ -4847,6 +4940,8 @@ class SlotMachineWindow(tk.Toplevel):
             self.start_spin()
 
     def start_spin(self):
+        if self.is_spinning:
+            return
         cur_coins = self.monitor.pet_data.get("coins", 0)
         if cur_coins < 10:
             self.status_msg = "地瓜幣不足 10 🪙！"
@@ -4856,6 +4951,7 @@ class SlotMachineWindow(tk.Toplevel):
         self.monitor.pet_data["coins"] -= 10
         self.monitor.save_pet_savegame()
         self.is_spinning = True
+        self._result_pending = True
         self.status_msg = "高速旋轉中... 祝好運！"
         self.spin_timer = 0
         self.lever_offset = 18.0
@@ -4884,6 +4980,9 @@ class SlotMachineWindow(tk.Toplevel):
             self.draw_machine()
 
     def check_win(self):
+        if not getattr(self, "_result_pending", False):
+            return
+        self._result_pending = False
         r1, r2, r3 = self.reels
         if r1 == r2 == r3:
             if r1 == "7️⃣":
@@ -4964,7 +5063,7 @@ class SlotMachineWindow(tk.Toplevel):
 
 
 
-class TokenPetActionMenu(tk.Toplevel):
+class TokenPetActionMenu(ManagedToplevel):
     """Warm, compact replacement for the native Windows menu in Unity mode."""
 
     BG = "#fff4d2"
@@ -5152,7 +5251,7 @@ class TokenPetActionMenu(tk.Toplevel):
             pass
 
 
-class HudWindow(tk.Toplevel):
+class HudWindow(ManagedToplevel):
     """專門用於貼地顯示等級徽章、漸層經驗條、飽食度與地瓜幣的懸浮膠囊風 HUD 看板視窗"""
     def __init__(self, monitor):
         super().__init__(monitor.root)
@@ -5241,7 +5340,7 @@ class HudWindow(tk.Toplevel):
         create_outlined_text(self.canvas, 170, hud_y + 14, text=info_str, fill="#f9e2af", font=("微軟正黑體", 8, "bold"), outline="#11111b", width=1.0)
 
 
-class ShadowWindow(tk.Toplevel):
+class ShadowWindow(ManagedToplevel):
     """專門用於貼地顯示、帶有雙層羽化物理高度淡出縮放與不遮擋點擊效果的獨立影子視窗"""
     def __init__(self, monitor):
         super().__init__(monitor.root)
@@ -5280,7 +5379,7 @@ class ShadowWindow(tk.Toplevel):
         self.canvas.create_oval(cx - w_in, cy - h_in, cx + w_in, cy + h_in, fill="#11111b", outline="")
 
 
-class MemoWindow(tk.Toplevel):
+class MemoWindow(ManagedToplevel):
     """獨立的日系和紙質感 2.5D 便利貼視窗 (支援自由拖曳縮放 Resizable)"""
     def __init__(self, monitor, memo_id, x, y, text="", w=180, h=160):
         super().__init__(monitor.root)
@@ -5329,7 +5428,8 @@ class MemoWindow(tk.Toplevel):
         self.draw_memo()
         
         # 綁定自動儲存
-        self.text_widget.bind("<KeyRelease>", self.on_text_change)
+        self.text_widget.edit_modified(False)
+        self.text_widget.bind("<<Modified>>", self.on_text_change)
         
         # 解決 Windows 下 Tkinter 對數字鍵盤 NumPad 的相容性 Bug (防範小數點變 Delete 或方向鍵)
         kp_bindings = {
@@ -5458,9 +5558,12 @@ class MemoWindow(tk.Toplevel):
             self.monitor.save_pet_savegame()
             
     def on_text_change(self, event=None):
-        text_content = self.text_widget.get("1.0", tk.END).strip()
+        self.text_widget.edit_modified(False)
+        text_content = self.text_widget.get("1.0", "end-1c")
         for m in self.monitor.pet_data.get("memos", []):
             if m["id"] == self.memo_id:
+                if m.get("text", "") == text_content:
+                    return
                 m["text"] = text_content
                 break
         self.monitor.save_pet_savegame()
@@ -5551,7 +5654,7 @@ class UnityFurnitureProxy:
             bridge.trigger_furniture(self.item_id, "bounce")
 
 
-class FurnitureWindow(tk.Toplevel):
+class FurnitureWindow(ManagedToplevel):
     def __init__(self, monitor, item_id):
         super().__init__(monitor.root)
         self.monitor = monitor

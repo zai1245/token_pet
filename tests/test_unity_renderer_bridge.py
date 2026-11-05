@@ -23,6 +23,25 @@ class _RecordingSocket:
 
 
 class UnityRendererBridgeTests(unittest.TestCase):
+    def test_failed_snapshot_is_retried_even_if_unchanged(self):
+        bridge = UnityRendererBridge("unused.exe")
+        arguments = dict(state="idle", emotion="normal", accessory=None, look_x=0, look_y=0)
+        with mock.patch.object(bridge, "send", side_effect=[False, True]) as send:
+            self.assertFalse(bridge.send_snapshot(**arguments))
+            self.assertTrue(bridge.send_snapshot(**arguments))
+        self.assertEqual(2, send.call_count)
+
+    def test_socket_failure_allows_canvas_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "renderer.exe"
+            executable.touch()
+            bridge = UnityRendererBridge(executable)
+            with mock.patch("unity_renderer_bridge.socket.socket", side_effect=OSError("bind failed")), \
+                    mock.patch("unity_renderer_bridge.subprocess.Popen") as launch:
+                self.assertFalse(bridge.start())
+            launch.assert_not_called()
+            self.assertEqual("start_failed", bridge.poll_events()[0]["event_name"])
+
     def test_unity_window_matches_legacy_canvas_dimensions(self):
         self.assertEqual((UNITY_WINDOW_WIDTH, UNITY_WINDOW_HEIGHT), (340, 300))
 

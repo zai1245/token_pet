@@ -87,7 +87,6 @@ def main() -> None:
 
     archive = ROOT / "dist" / f"TokenPetIntegrated-v{release_version}-dev-win-x64.zip"
     if not args.publish_existing:
-        run(os.fspath(Path(os.sys.executable)), "-m", "pytest", "-q")
         unity = find_unity()
         run(
             os.fspath(unity),
@@ -101,6 +100,7 @@ def main() -> None:
             "-logFile",
             os.fspath(ROOT / "unity_poc" / "publish-build.log"),
         )
+        run(os.fspath(Path(os.sys.executable)), "-m", "unittest", "discover", "-s", "tests", "-q")
         run(os.sys.executable, os.fspath(ROOT / "tools" / "package_integrated.py"), "--replace")
     if not archive.is_file():
         raise FileNotFoundError(f"Release archive does not exist: {archive}")

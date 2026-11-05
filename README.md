@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/GUI-Tkinter%20Canvas-orange.svg" alt="GUI Framework">
   <img src="https://img.shields.io/badge/AI-DeepSeek--V4%20%2F%20GLM--5-purple.svg" alt="AI Model">
   <img src="https://img.shields.io/badge/OS-Windows-success.svg" alt="OS Support">
-  <img src="https://img.shields.io/badge/Version-2.9.4-brightgreen.svg" alt="App Version">
+  <img src="https://img.shields.io/badge/Version-0.8.10--preview-brightgreen.svg" alt="App Version">
 </p>
 
 **TokenPet（地瓜球）** 是一隻運行在 Windows 桌面上的軟萌 Q 彈 2.5D 電子寵物與 API Token 即時用量監控助理！它不僅能即時監控 API 費用與用量，還擁有完整的果凍物理彈性引擎、動態 360° 轉身渲染、AI 智慧尬聊、日式和風便利貼、家具互動以及豐富的休閒小遊戲！
@@ -17,6 +17,8 @@
 請勿單獨啟動 `TokenPetUnity.exe`；完整右鍵選單與遊戲系統需要 Python bridge。
 啟動器預設登入公司 chatbot，並在狀態列顯示本月累積費用（USD）。
 純離線測試可執行 `run_unity_preview.cmd offline`，此模式不會同步公司用量。
+啟動器預設使用一般遊戲經濟；只有明確加上 `dev` 參數才會開啟開發者商店。
+寵物顯示快捷鍵預設為 F7，詳細統計面板為 F8，兩者可分別設定。
 維護者發佈流程見 [`GITHUB_RELEASES.md`](GITHUB_RELEASES.md)。
 
 ---
@@ -36,6 +38,7 @@
 - **內網 LLM / AI Nexus 智慧對接**：支援 DeepSeek-V4 與 GLM-5 雙模型秒級 Fallback。
 - **即時狀態感知**：地瓜球能感知主人的稱呼、等級、金幣、飽食度與花費，並以軟萌元氣的日系語氣陪伴主人上班。
 - **桌面自發搭話**：定時主動彈出關心氣泡，提醒主人喝水、休息與放鬆。
+- **個人 API Key**：在 AI 設定輸入自己的 Key，或設定 `TOKENPET_AI_API_KEY` 環境變數；程式不再內建共用 Key。未設定時仍可使用用量監控與所有離線遊戲功能。
 
 ### 4. 📝 日式和風便利貼系統 (Sticky Memos)
 - 支援自由拖曳、自由拉伸縮放（Resizable）的半透明和紙便利貼。

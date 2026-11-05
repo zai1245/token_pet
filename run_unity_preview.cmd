@@ -2,8 +2,8 @@
 setlocal
 cd /d "%~dp0"
 
-rem Local preview is the developer sandbox. Packaged builds keep normal economy rules.
-set "TOKENPET_DEVELOPER_MODE=1"
+rem Normal economy by default; pass dev explicitly to unlock the developer shop.
+set "TOKENPET_DEVELOPER_MODE=0"
 set "TOKENPET_LAUNCH_DEBUG=0"
 set "TOKENPET_EXTRA_ARGS="
 set "TOKENPET_MODE_ARGS="
@@ -17,6 +17,7 @@ if /I "%~1"=="debug" (
 if /I "%~1"=="shop" set "TOKENPET_EXTRA_ARGS=--debug-open-shop"
 if /I "%~1"=="basketball" set "TOKENPET_EXTRA_ARGS=--debug-open-basketball"
 if /I "%~1"=="offline" set "TOKENPET_MODE_ARGS=--standalone"
+if /I "%~1"=="dev" set "TOKENPET_DEVELOPER_MODE=1"
 shift
 goto parse_args
 

@@ -6,7 +6,7 @@ namespace TokenPet
 {
     public sealed class TokenPetPocBootstrap : MonoBehaviour
     {
-        public const string RendererVersion = "0.8.10-preview";
+        public const string RendererVersion = "0.8.11-preview";
 
         private enum MotionState
         {
@@ -52,12 +52,16 @@ namespace TokenPet
         private float airborneHeight;
         private bool pointerDown;
         private bool pointerDragged;
+        private bool awaitingDragRelease;
+        private int dragId;
+        private float legacyRollAngle;
+        private Vector2 legacyBodyScale = Vector2.one;
         private Vector2Int dragWindowStart;
         private Vector2Int dragCursorStart;
         private Vector2Int previousCursorPosition;
         private Vector2 pointerVelocity;
-        private readonly Vector2[] throwSamplePositions = new Vector2[16];
-        private readonly float[] throwSampleTimes = new float[16];
+        private readonly Vector2[] throwSamplePositions = new Vector2[64];
+        private readonly double[] throwSampleTimes = new double[64];
         private int throwSampleIndex;
         private int throwSampleCount;
         private int lastDragDirection;
@@ -316,6 +320,9 @@ namespace TokenPet
             {
                 pointerDown = true;
                 pointerDragged = false;
+                awaitingDragRelease = false;
+                dragId++;
+                ipc.Send(new RendererEvent { event_name = "drag_started", action = "drag", drag_id = dragId });
                 dragCursorStart = overlay.GetCursorPosition();
                 previousCursorPosition = dragCursorStart;
                 dragWindowStart = overlay.GetPosition();
@@ -330,14 +337,14 @@ namespace TokenPet
             {
                 Vector2Int cursor = overlay.GetCursorPosition();
                 Vector2Int mouseDelta = cursor - dragCursorStart;
+                RecordThrowSample(cursor);
                 // Use the desktop cursor delta rather than camera/world coordinates.
                 // Moving the native window changes Input.mousePosition relative to
                 // that window and otherwise creates a feedback loop during dragging.
-                if (!pointerDragged && mouseDelta.sqrMagnitude > 36)
+                if (!pointerDragged && mouseDelta.sqrMagnitude > 16)
                 {
                     pointerDragged = true;
                     EnterState(MotionState.Drag);
-                    ipc.Send(new RendererEvent { event_name = "drag_started", action = "drag" });
                 }
 
                 if (pointerDragged)
@@ -349,7 +356,6 @@ namespace TokenPet
                     pointerVelocity = Vector2.Lerp(pointerVelocity,
                         new Vector2(frameDelta.x, -frameDelta.y) / Mathf.Max(Time.unscaledDeltaTime, 0.001f), 0.35f);
                     previousCursorPosition = cursor;
-                    RecordThrowSample(cursor);
                     TrackShake(frameDelta.x);
                 }
             }
@@ -357,10 +363,16 @@ namespace TokenPet
             if (pointerDown && Input.GetMouseButtonUp(0))
             {
                 pointerDown = false;
+                awaitingDragRelease = ipc != null && ipc.IsConnected;
                 Vector2Int windowPosition = overlay.GetPosition();
                 if (pointerDragged)
                 {
-                    Vector2 releaseVelocity = ComputeThrowVelocity(overlay.GetCursorPosition());
+                    Vector2Int releaseCursor = overlay.GetCursorPosition();
+                    Vector2Int releaseDelta = releaseCursor - dragCursorStart;
+                    overlay.MoveTo(dragWindowStart.x + releaseDelta.x, dragWindowStart.y + releaseDelta.y);
+                    RefreshDesktopStageLayout();
+                    windowPosition = overlay.GetPosition();
+                    Vector2 releaseVelocity = ComputeThrowVelocity(releaseCursor);
                     airborneVelocity = new Vector2(
                         Mathf.Clamp(releaseVelocity.x * 0.0007f, -2.4f, 2.4f),
                         Mathf.Clamp(releaseVelocity.y * 0.0007f + 1.5f, 0.8f, 3.2f));
@@ -374,11 +386,17 @@ namespace TokenPet
                         y = windowPosition.y,
                         floor_y = overlay.GetPetWorkArea().yMax - (int)LegacyCanvasHeight,
                         velocity_x = releaseVelocity.x,
-                        velocity_y = releaseVelocity.y
+                        velocity_y = releaseVelocity.y,
+                        drag_id = dragId
                     });
                 }
                 else
                 {
+                    ipc.Send(new RendererEvent
+                    {
+                        event_name = "drag_released", action = "click", drag_id = dragId,
+                        x = windowPosition.x, y = windowPosition.y
+                    });
                     bool doubleClick = Time.unscaledTime - lastClickTime < 0.35f;
                     lastClickTime = Time.unscaledTime;
                     if (doubleClick)
@@ -399,54 +417,40 @@ namespace TokenPet
             throwSampleIndex = 0;
             throwSampleCount = 1;
             throwSamplePositions[0] = cursor;
-            throwSampleTimes[0] = Time.unscaledTime;
+            throwSampleTimes[0] = Time.unscaledTimeAsDouble;
         }
 
         private void RecordThrowSample(Vector2Int cursor)
         {
+            // Canvas receives motion events, not repeated stationary frames.
+            if (throwSampleCount > 0 && (Vector2)cursor == throwSamplePositions[throwSampleIndex])
+                return;
             throwSampleIndex = (throwSampleIndex + 1) % throwSamplePositions.Length;
             throwSamplePositions[throwSampleIndex] = cursor;
-            throwSampleTimes[throwSampleIndex] = Time.unscaledTime;
+            throwSampleTimes[throwSampleIndex] = Time.unscaledTimeAsDouble;
             throwSampleCount = Mathf.Min(throwSampleCount + 1, throwSamplePositions.Length);
         }
 
         private Vector2 ComputeThrowVelocity(Vector2Int releaseCursor)
         {
             RecordThrowSample(releaseCursor);
-            float now = Time.unscaledTime;
-            const float sampleWindow = 0.10f;
-            Vector2 weightedVelocity = Vector2.zero;
-            float totalWeight = 0f;
-
-            // Average recent per-frame velocities with a strong recency bias.
-            // This removes event jitter without diluting the final flick with
-            // the slower first half of a long drag.
-            for (int offset = 0; offset < throwSampleCount - 1; offset++)
-            {
-                int newerIndex = (throwSampleIndex - offset + throwSamplePositions.Length) %
-                    throwSamplePositions.Length;
-                int olderIndex = (throwSampleIndex - offset - 1 + throwSamplePositions.Length) %
-                    throwSamplePositions.Length;
-                float age = now - throwSampleTimes[olderIndex];
-                if (age > sampleWindow)
-                    break;
-                float elapsed = throwSampleTimes[newerIndex] - throwSampleTimes[olderIndex];
-                if (elapsed < 0.002f)
-                    continue;
-                Vector2 delta = throwSamplePositions[newerIndex] - throwSamplePositions[olderIndex];
-                if (delta.sqrMagnitude < 0.25f)
-                    continue;
-
-                Vector2 segmentVelocity = delta / elapsed;
-                float recency = Mathf.Lerp(3.0f, 1.0f, Mathf.Clamp01(age / sampleWindow));
-                float weight = recency * elapsed;
-                weightedVelocity += segmentVelocity * weight;
-                totalWeight += weight;
-            }
-
-            if (totalWeight <= 0.0001f)
+            double newestTime = throwSampleTimes[throwSampleIndex];
+            if (Time.unscaledTimeAsDouble - newestTime >= 0.18)
                 return Vector2.zero;
-            Vector2 desktopVelocity = weightedVelocity / totalWeight;
+            int oldestIndex = throwSampleIndex;
+            for (int offset = 1; offset < throwSampleCount; offset++)
+            {
+                int candidate = (throwSampleIndex - offset + throwSamplePositions.Length) %
+                    throwSamplePositions.Length;
+                if (newestTime - throwSampleTimes[candidate] >= 0.12)
+                    break;
+                oldestIndex = candidate;
+            }
+            if (oldestIndex == throwSampleIndex)
+                return Vector2.zero;
+            float elapsed = (float)Math.Max(0.010, newestTime - throwSampleTimes[oldestIndex]);
+            Vector2 desktopVelocity = (throwSamplePositions[throwSampleIndex] -
+                throwSamplePositions[oldestIndex]) / elapsed;
             // Desktop Y grows downward; the IPC contract uses screen-up positive.
             return new Vector2(desktopVelocity.x, -desktopVelocity.y);
         }
@@ -571,19 +575,11 @@ namespace TokenPet
                 case MotionState.Airborne:
                     if (externallyDriven)
                     {
-                        float tumbleDirection = pointerVelocity.x < -10f ? -1f : 1f;
-                        bool forcedSpin = string.Equals(legacyState, "backflip", StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(legacyState, "roll", StringComparison.OrdinalIgnoreCase);
-                        if (string.Equals(legacyState, "backflip", StringComparison.OrdinalIgnoreCase))
-                            tumbleDirection = -1f;
-                        float spinStrength = forcedSpin
-                            ? 1f
-                            : Mathf.Clamp(Mathf.Abs(pointerVelocity.x) / 900f, 0.04f, 1f);
-                        rotation = Mathf.Repeat(
-                            motionTime * profile.tilt * tumbleDirection * spinStrength, 360f);
-                        float fallPulse = (Mathf.Sin(motionTime * 7f) + 1f) * 0.5f;
-                        scale.x = 1f - fallPulse * profile.squash * 0.65f;
-                        scale.y = 1f + fallPulse * profile.stretch * 0.65f;
+                        // Python runs the Canvas angular damping/backflip and
+                        // spring deformation. Do not invent another spin here.
+                        rotation = -legacyRollAngle * Mathf.Rad2Deg;
+                        scale.x = legacyBodyScale.x;
+                        scale.y = legacyBodyScale.y;
                     }
                     else
                     {
@@ -621,7 +617,8 @@ namespace TokenPet
             float lookWeight = motion == MotionState.Drag || motion == MotionState.Airborne ? 0.25f : 1f;
             horizontal += lookSmoothed.x * 0.045f * lookWeight;
             vertical += lookSmoothed.y * 0.018f * lookWeight;
-            rotation -= lookSmoothed.x * 2.4f * lookWeight;
+            if (!(motion == MotionState.Airborne && externallyDriven))
+                rotation -= lookSmoothed.x * 2.4f * lookWeight;
             ApplyLegacyPerformance(ref horizontal, ref vertical, ref rotation, ref scale);
 
             Vector3 targetPosition = new(horizontal, vertical, 0f);
@@ -640,9 +637,15 @@ namespace TokenPet
             poseScale = Vector3.SmoothDamp(
                 poseScale, targetScale, ref poseScaleVelocity,
                 smoothTime, Mathf.Infinity, deltaTime);
-            poseRotation = Mathf.SmoothDampAngle(
-                poseRotation, rotation, ref poseRotationVelocity,
-                smoothTime, Mathf.Infinity, deltaTime);
+            if (motion == MotionState.Airborne && externallyDriven)
+            {
+                poseRotation = rotation;
+                poseRotationVelocity = 0f;
+            }
+            else
+                poseRotation = Mathf.SmoothDampAngle(
+                    poseRotation, rotation, ref poseRotationVelocity,
+                    smoothTime, Mathf.Infinity, deltaTime);
 
             // The native desktop window owns global movement. MotionRoot owns the
             // local performance so body and all equipment share one coherent pose.
@@ -867,7 +870,11 @@ namespace TokenPet
             switch (command.command)
             {
                 case "snapshot":
+                    if (pointerDown || awaitingDragRelease)
+                        break;
                     string previousLegacyState = legacyState;
+                    legacyRollAngle = command.roll_angle;
+                    legacyBodyScale = new Vector2(command.scale_x, command.scale_y);
                     legacyExpression = string.IsNullOrEmpty(command.emotion)
                         ? "normal"
                         : command.emotion;
@@ -939,8 +946,15 @@ namespace TokenPet
                     statusHud.SetVisible(command.visible);
                     break;
                 case "move_window":
-                    overlay.MoveTo(Mathf.RoundToInt(command.x), Mathf.RoundToInt(command.y));
-                    RefreshDesktopStageLayout();
+                    if (!pointerDown && !awaitingDragRelease)
+                    {
+                        overlay.MoveTo(Mathf.RoundToInt(command.x), Mathf.RoundToInt(command.y));
+                        RefreshDesktopStageLayout();
+                    }
+                    break;
+                case "drag_release_ack":
+                    if (!pointerDown && command.drag_id == dragId)
+                        awaitingDragRelease = false;
                     break;
                 case "popup":
                     floatingText.Show(command.text, command.x, command.y,

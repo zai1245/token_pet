@@ -196,6 +196,9 @@ class UnityRendererBridge:
         show_board: bool = False,
         board_text: str = "",
         overtime: bool = False,
+        roll_angle: float = 0.0,
+        scale_x: float = 1.0,
+        scale_y: float = 1.0,
     ) -> bool:
         if isinstance(board_text, (list, tuple)):
             board_text = "\n".join(str(line) for line in board_text)
@@ -226,6 +229,9 @@ class UnityRendererBridge:
             "show_board": bool(show_board),
             "board_text": str(board_text or ""),
             "overtime": bool(overtime),
+            "roll_angle": round(float(roll_angle), 5),
+            "scale_x": round(float(scale_x), 4),
+            "scale_y": round(float(scale_y), 4),
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         now = time.monotonic()

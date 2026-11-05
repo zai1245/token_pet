@@ -26,6 +26,10 @@ namespace TokenPet
         public bool visible = true;
         public float look_x;
         public float look_y;
+        public float roll_angle;
+        public float scale_x = 1f;
+        public float scale_y = 1f;
+        public int drag_id;
         public int level = 1;
         public float xp;
         public float xp_max = 100f;
@@ -71,6 +75,7 @@ namespace TokenPet
         public string face_mode;
         public float velocity_x;
         public float velocity_y;
+        public int drag_id;
         public string message;
         public string item;
     }

@@ -8,7 +8,7 @@
 
 ### 🔴 Critical Issues
 
-All entries below have been fixed in v0.8.10-preview. Locations refer to the final source in this revision.
+All entries below were fixed in v0.8.10-preview. Locations refer to commit `a643cac`; the physics follow-up is recorded below.
 
 - **Missing XP reward methods** — `emojinoko_monitor.py:3778`. Fruit/slot wins and lollipop purchases could crash. **Suggested fix (implemented):** shared multi-level XP settlement.
 - **Concurrent save corruption / lost settings** — `config_store.py:15`, `config_store.py:86`. Pet, statistics and login writes could overwrite each other or truncate JSON. **Suggested fix (implemented):** cross-process locking, atomic replacement, recovery backup and credential removal from both copies.
@@ -60,3 +60,15 @@ Validation results:
 - Package checks reject a stale compiled renderer and verify ZIP integrity plus all manifest SHA-256 hashes. `config_store.py` and this report are included.
 
 Build limitation: Unity Editor is unavailable on this machine. This preview reuses the existing engine/assets and recompiles its managed scripts; it is not a fresh Unity Editor engine/asset build. No art, scene or imported asset changes were made during this review.
+
+### Follow-up: Canvas throw parity — v0.8.11-preview
+
+The earlier Unity-specific throw tuning did not match the original Canvas feel. It used a 1.5x impulse, recency-weighted velocity sampling, different drag/gravity and reduced floor rebounds. Python could also continue a previous fall while Unity held the pet, and the renderer invented a continuing spin from stale pointer velocity.
+
+- Canvas and Unity now call the same release initializer: 0.016 velocity conversion, 0.8 gravity, 0.995 air drag, the original 550 px/s flick threshold and 0.55 floor restitution.
+- Both use the last 120 ms of motion, with a 180 ms pause cancelling a stale flick. Unity keeps a 64-sample ring and double-precision timestamps.
+- Pointer grab pauses Python movement. Unity ignores queued position/state commands while held and until it receives the matching release acknowledgement. Click release also returns ownership; late landing animation events cannot cancel a newer throw.
+- Unity consumes Canvas angular position and spring scale during flight instead of adding another independent spin/stretch animation. Stationary drops have no added launch impulse or angular velocity.
+- Recompiled the local production managed renderer. **121 tests passed**, including a 150-frame Canvas/Unity trajectory comparison through floor impacts and final rest. An isolated native Unity probe passed **10 sampling, ownership and rotation checks**. The test probe is never included in the production assembly.
+
+The native probe test requires an installed Mono player and .NET SDK; otherwise that optional test is skipped. It builds and runs in a temporary runtime copy, leaving the production build untouched.

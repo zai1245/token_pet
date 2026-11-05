@@ -129,6 +129,46 @@ class UiLifecycleTests(unittest.TestCase):
     def test_canvas_feature_windows_purchases_and_shutdown(self):
         self.exercise_application(unity=False)
 
+    def test_canvas_and_unity_follow_the_same_arc_and_floor_bounces(self):
+        config = {"pet_game": {"coins": 0, "level": 1, "xp": 0, "satiety": 100,
+                               "ai_config": {"auto_chatter": False}}}
+        with mock.patch.object(sys, "argv", ["TokenPet", "--standalone"]), \
+                mock.patch.object(app, "load_config", side_effect=lambda: copy.deepcopy(config)), \
+                mock.patch.object(app, "save_config"), mock.patch.object(app, "HotkeyManager"), \
+                mock.patch.object(app.EmojinokoMonitor, "_cleanup_old_versions_async"), \
+                mock.patch.object(app.EmojinokoMonitor, "_start_game_loops"):
+            pet = app.EmojinokoMonitor(self.root, "", "", "test", "", "")
+            pet.get_current_monitor_info = mock.Mock(return_value={
+                "work_x": 0, "work_y": 0, "work_w": 1920, "work_h": 1080,
+                "mon_x": 0, "mon_y": 0, "mon_w": 1920, "mon_h": 1080})
+            pet.get_virtual_screen_bounds = mock.Mock(return_value=(0, 1580))
+            self.root.winfo_x = lambda: pet._physics_win_x
+            self.root.winfo_y = lambda: pet._physics_win_y
+            traces = []
+            for unity in (False, True):
+                pet._unity_renderer_active = unity
+                pet.unity_renderer = mock.Mock() if unity else None
+                pet.pet = app.EmojinokoPet(pet.canvas, 170, 205)
+                pet.update_geometry(400, 400)
+                pet._release_desktop_drag(800, -600, 400)
+                trajectory = []
+                for frame in range(150):
+                    with mock.patch.object(app.time, "monotonic", return_value=1000 + frame / 60), \
+                            mock.patch.object(app.random, "random", return_value=0.99):
+                        pet.tick_physics()
+                    trajectory.append((pet._physics_win_x, pet._physics_win_y,
+                                       pet._fall_vx, pet._fall_vy, pet.pet.state))
+                traces.append(trajectory)
+            self.assertEqual(traces[0], traces[1])
+            impacts = [index for index in range(1, len(traces[0]))
+                       if traces[0][index - 1][3] > 0 and traces[0][index][3] < 0]
+            self.assertGreater(len(impacts), 0)
+            for index in impacts:
+                self.assertAlmostEqual(-0.55 * (traces[0][index - 1][3] + 0.8), traces[0][index][3])
+            self.assertEqual("idle", traces[0][-1][4])
+            self.root.destroy()
+        self.assertEqual([], self.errors)
+
     @unittest.skipUnless((Path(__file__).resolve().parents[1] / "unity_poc/Build/TokenPetUnity.exe").is_file(),
                          "Unity runtime not installed")
     def test_unity_integrated_feature_windows_purchases_and_shutdown(self):

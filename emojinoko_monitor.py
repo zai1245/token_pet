@@ -48,16 +48,23 @@ def time_ms():
 
 
 def map_unity_throw_velocity(pointer_vx, desktop_vy):
-    """Convert DPI-aware pointer pixels/second into desktop physics/frame."""
-    speed = math.hypot(pointer_vx, desktop_vy)
-    if speed < 80.0:
-        return 0.0, 1.5, speed
-    # Preserve the hand's release velocity. The old long-window average and
-    # strong per-frame drag made throws feel as if they were moving through oil.
-    impulse_scale = 0.024
-    fall_vx = max(-28.0, min(28.0, pointer_vx * impulse_scale))
-    fall_vy = max(-36.0, min(22.0, desktop_vy * impulse_scale))
-    return fall_vx, fall_vy, speed
+    """Use the Canvas conversion for both renderers: pixels/second to 16 ms."""
+    if not math.isfinite(pointer_vx) or not math.isfinite(desktop_vy):
+        return 0.0, 0.0, 0.0
+    return pointer_vx * 0.016, desktop_vy * 0.016, math.hypot(pointer_vx, desktop_vy)
+
+
+def canvas_drag_velocity(history, released_at):
+    """Canvas flick rule: last 120 ms of motion, stale after a 180 ms pause."""
+    if not history or released_at - history[-1][0] >= 0.18:
+        return 0.0, 0.0
+    latest = history[-1]
+    active = [sample for sample in history if latest[0] - sample[0] < 0.12]
+    if len(active) < 2:
+        return 0.0, 0.0
+    oldest = active[0]
+    elapsed = max(latest[0] - oldest[0], 0.010)
+    return (latest[1] - oldest[1]) / elapsed, (latest[2] - oldest[2]) / elapsed
 
 
 def _accessory_slot(item_id):
@@ -509,7 +516,8 @@ class EmojinokoMonitor:
         # 同步更新獨立的物理貼地影子與獨立 HUD 看板位置
         self.update_shadow_position(x, y)
         bridge = getattr(self, "unity_renderer", None)
-        if getattr(self, "_unity_renderer_active", False) and bridge is not None:
+        if (getattr(self, "_unity_renderer_active", False) and bridge is not None
+                and not getattr(self, "_unity_dragging", False)):
             bridge.move_window(x, y)
 
     def _get_pet_desktop_position(self):
@@ -631,14 +639,7 @@ class EmojinokoMonitor:
                 if isinstance(hoop, UnityBasketballHoop):
                     hoop.mark_closed()
             elif event_name == "drag_released":
-                x = int(payload.get("x", self._physics_win_x))
-                y = int(payload.get("y", self._physics_win_y))
-                self.update_geometry(x, y)
-                save_config({"pet_x": x, "pet_y": y})
                 self._begin_unity_release_fall(payload)
-            elif event_name == "action_finished" and payload.get("action") == "land":
-                if self.pet.state in ("fall", "roll", "backflip"):
-                    self.pet.state = "idle"
             elif event_name in ("process_exit", "connection_lost", "renderer_closed"):
                 self._fallback_to_legacy_renderer(event_name, payload.get("message", ""))
                 return
@@ -652,7 +653,7 @@ class EmojinokoMonitor:
                 self._fallback_to_legacy_renderer("startup_timeout")
                 return
 
-        self.root.after(50, self._poll_unity_renderer)
+        self.root.after(16, self._poll_unity_renderer)
 
     def _apply_unity_desktop_metrics(self, payload):
         """Store DPI-aware work-area geometry reported by the Unity process."""
@@ -687,12 +688,16 @@ class EmojinokoMonitor:
             self._unity_desktop_metrics = existing
 
     def _detach_unity_drag(self):
-        """Match the Canvas rule that grabbing the pet cancels furniture poses."""
-        if getattr(self, "current_furniture_snapped", None) is None:
-            return
+        """Give Unity exclusive position ownership while the cursor holds it."""
+        self._unity_dragging = True
         self.current_furniture_snapped = None
         self.target_furniture_id = None
         self._furniture_cooldown = 120
+        self._fall_vx = self._fall_vy = 0.0
+        self._fall_tick_state = ""
+        self.pet.balloon_timer = 0
+        self._chase_origin_x = None
+        self._chase_jump_vy = 0.0
         self.pet.state = "idle"
         self.pet.eye_state = "normal"
         self.pet.mouth_state = "normal"
@@ -754,43 +759,51 @@ class EmojinokoMonitor:
             self._trigger_fever_mode()
 
     def _begin_unity_release_fall(self, payload):
-        """Feed a Unity drag release into the original desktop fall engine."""
+        """Acknowledge the handoff before sending any Python-owned movement."""
+        self._unity_dragging = False
+        bridge = getattr(self, "unity_renderer", None)
+        if bridge is not None:
+            bridge.send({"command": "drag_release_ack", "drag_id": int(payload.get("drag_id", 0))})
+        x = int(payload.get("x", self._physics_win_x))
+        y = int(payload.get("y", self._physics_win_y))
+        self.update_geometry(x, y)
+        save_config({"pet_x": x, "pet_y": y})
+        if payload.get("action") == "click":
+            return
         vx = float(payload.get("velocity_x", 0.0))
         # Unity reports screen-up as positive; Tk/desktop Y grows downwards.
         vy = -float(payload.get("velocity_y", 0.0))
+        self._release_desktop_drag(vx, vy, y)
+
+    def _release_desktop_drag(self, vx, vy, current_y):
+        """Shared Canvas/Unity release rules, impulse and visual feedback."""
         fall_vx, fall_vy, speed = map_unity_throw_velocity(vx, vy)
-        current_y = float(self._physics_win_y)
         self._fall_peak_y = current_y
         m_info = self.get_current_monitor_info()
         landing_y = m_info["work_y"] + m_info["work_h"] - 300
-
-        if speed <= 120.0 and current_y >= landing_y - 2:
-            self.update_geometry(self._physics_win_x, landing_y)
-            self.pet.state = "idle"
+        if speed <= 550.0 and current_y >= landing_y - 20:
             return
-
-        # Preserve enough upward impulse to reach the draggable basketball hoop
-        # while capping wild focus/DPI spikes. A gentle release still falls.
         self._fall_vx = fall_vx
         self._fall_vy = fall_vy
-        self._fall_gravity = 0.78
-        self._fall_air_drag = 0.998
-        self._unity_fall_started_at = time.monotonic()
-        self._unity_floor_bounced = False
-        self.pet.roll_angle = 0.0
+        self._fall_gravity = 0.8
+        self._fall_air_drag = 0.995
+        self._fall_tick_state = ""
         if speed > 550.0 and vy < -550.0:
             self.pet.state = "backflip"
             self.pet.backflip_timer = 40
+            self.pet.roll_angle = 0.0
             self.pet.eye_state = "star"
             self.pet.mouth_state = "open"
             self.create_text_popup("⭐後空翻!!⭐", 170, 120, color=YELLOW_COLOR)
         else:
             self.pet.state = "fall"
-            self.pet.roll_speed = max(-0.3, min(0.3, vx * 0.0004))
-            self.pet.eye_state = "dizzy"
-            self.pet.mouth_state = "open"
-            self.pet.vel_scale_x = 0.18
-            self.pet.vel_scale_y = -0.18
+            limit = 0.3 if speed > 550.0 else 0.1
+            self.pet.roll_speed = max(-limit, min(limit, vx * 0.0004))
+            if speed > 550.0:
+                self.pet.eye_state = "dizzy"
+                self.pet.mouth_state = "open"
+                self.pet.vel_scale_x = 0.18
+                self.pet.vel_scale_y = -0.18
             message = "滾滾滾～" if speed > 550.0 else "哇哇哇～"
             color = ACCENT_COLOR if speed > 550.0 else PINK_COLOR
             self.create_text_popup(message, 170, 120, color=color)
@@ -823,11 +836,10 @@ class EmojinokoMonitor:
             if abs(float(self._physics_win_y) - landing_y) > 2.0:
                 self._fall_vx = 0.0
                 self._fall_vy = 1.0
-                self._fall_gravity = 1.05
+                self._fall_gravity = 0.8
                 self._fall_air_drag = 0.995
                 self._fall_peak_y = float(self._physics_win_y)
-                self._unity_fall_started_at = time.monotonic()
-                self._unity_floor_bounced = True
+                self._fall_tick_state = ""
                 self.pet.state = "fall"
         print("[Unity Renderer] Ready; legacy pet hidden and standing by as fallback.")
         if "--debug-open-shop" in sys.argv:
@@ -836,6 +848,7 @@ class EmojinokoMonitor:
             self.root.after(250, self.toggle_basketball_game)
 
     def _fallback_to_legacy_renderer(self, reason, detail=""):
+        self._unity_dragging = False
         bridge = getattr(self, "unity_renderer", None)
         self.unity_renderer = None
         self._unity_renderer_active = False
@@ -918,6 +931,9 @@ class EmojinokoMonitor:
             show_board=bool(getattr(self.pet, "show_board", False)),
             board_text=getattr(self.pet, "custom_board_text", "") or "",
             overtime=bool(getattr(self.pet, "is_overtime", False)),
+            roll_angle=float(getattr(self.pet, "roll_angle", 0.0)),
+            scale_x=float(getattr(self.pet, "scale_x", 1.0)),
+            scale_y=float(getattr(self.pet, "scale_y", 1.0)),
         )
 
     # ──────────────────────────────────────────────────
@@ -926,6 +942,10 @@ class EmojinokoMonitor:
     def tick_physics(self):
         """約 60 FPS (16ms) 的物理震盪與 Canvas 重繪迴圈"""
         if not self.root.winfo_exists():
+            return
+        if (getattr(self, "_unity_renderer_active", False)
+                and getattr(self, "_unity_dragging", False)):
+            self.root.after(16, self.tick_physics)
             return
             
         # 0. 系統級置頂守護 (Topmost Guard)：每 60 幀 (約 1 秒) 強制重新置頂所有附屬視窗，防禦 Windows 層級搶焦
@@ -1536,27 +1556,10 @@ class EmojinokoMonitor:
                     perfect_prob = 0.90 - 0.70 * (fall_height - 100) / 400.0
                 
                 is_perfect_land = (random.random() < perfect_prob)
-                unity_fall = getattr(self, "_unity_renderer_active", False)
-                if unity_fall:
-                    elapsed = time.monotonic() - getattr(
-                        self, "_unity_fall_started_at", time.monotonic())
-                    # At most one short squash/bounce in Unity mode. The old
-                    # random multi-bounce chain was the source of the apparent
-                    # endless floating and made the taskbar stop feel optional.
-                    may_bounce_once = (
-                        not getattr(self, "_unity_floor_bounced", False)
-                        and elapsed < 1.25
-                        and self._fall_vy > 9.0
-                    )
-                    is_perfect_land = not may_bounce_once
-                
                 # 若沒能完美落地，且下落速度大於 4.5，則進行反彈
                 if not is_perfect_land and (self._fall_vy > 4.5):
                     new_y = landing_y
-                    bounce_factor = 0.28 if unity_fall else 0.55
-                    self._fall_vy = -self._fall_vy * bounce_factor
-                    if unity_fall:
-                        self._unity_floor_bounced = True
+                    self._fall_vy = -self._fall_vy * 0.55
                     self._fall_vx *= 0.7  # 地面摩擦力
                     
                     # 落地彈跳果凍變形
@@ -2721,7 +2724,7 @@ class EmojinokoMonitor:
         self.root.lift()  # 拖曳時將地瓜球視窗置頂
         
         # 中斷掉落狀態、咖啡飲用、氣泡飄浮、追滑鼠與返回原位狀態
-        if self.pet.state in ("fall", "drink", "balloon", "chase_mouse", "return_home"):
+        if self.pet.state in ("fall", "backflip", "roll", "drink", "balloon", "chase_mouse", "return_home"):
             self.pet.state = "idle"
             self.pet.eye_state = "normal"
             self.pet.mouth_state = "normal"
@@ -2801,76 +2804,8 @@ class EmojinokoMonitor:
             pass
             
         if getattr(self, "_has_dragged", False) and event:
-            now = time.time()
-            speed = 0.0
-            vx = 0.0
-            vy = 0.0
-            dt = 0.0
-            
-            if self._drag_history:
-                # 取得最後一次移動事件的時間與位置
-                last_motion_time = self._drag_history[-1][0]
-                
-                # 若釋放瞬間與最後一次滑鼠移動的時間差在 180 毫秒內，判定為連續的拖曳甩動釋送
-                if now - last_motion_time < 0.18:
-                    # 使用最後一次移動時間作為基準，往前篩選 120 毫秒內（即甩動最劇烈階段）的移動點
-                    active_history = [h for h in self._drag_history if last_motion_time - h[0] < 0.12]
-                    
-                    if len(active_history) >= 2:
-                        oldest = active_history[0]
-                        newest = active_history[-1]
-                        dt = newest[0] - oldest[0]
-                        
-                        # 避免除以 0，且支援測試中瞬時觸發的極小時間差
-                        dt_calc = max(dt, 0.010)
-                        dx_track = newest[1] - oldest[1]
-                        dy_track = newest[2] - oldest[2]
-                        vx = dx_track / dt_calc
-                        vy = dy_track / dt_calc
-                        speed = math.hypot(vx, vy)
-            
-            # 物理速度大於 550 像素/秒 時判定為高速甩動，或者只要在空中釋放，都會啟動下墜與彈跳物理
-            if speed > 550.0:
-                if vy < -550.0:
-                    # 向上高速甩動：後空翻 (Backflip)!
-                    self.pet.state = "backflip"
-                    self.pet.backflip_timer = 40  # ~0.66s
-                    self.pet.roll_angle = 0.0
-                    self.pet.eye_state = "star"
-                    self.pet.mouth_state = "open"
-                    # 設定重力落下的初始速度 (vx 與 vy)
-                    self._fall_vx = vx * 0.016
-                    self._fall_vy = vy * 0.016
-                    self._fall_gravity = 0.8
-                    self._fall_air_drag = 0.995
-                    self.create_text_popup("⭐後空翻!!⭐", 170, 120, color=YELLOW_COLOR)
-                else:
-                    # 橫向或向下高速甩動：飛滾彈跳
-                    self.pet.state = "fall"
-                    # 滾動角速度方向取決於最後的拖曳水平速度
-                    self.pet.roll_speed = max(-0.3, min(0.3, vx * 0.0004))
-                    self.pet.eye_state = "dizzy"
-                    self.pet.mouth_state = "open"
-                    self.pet.vel_scale_x = 0.18
-                    self.pet.vel_scale_y = -0.18
-                    self._fall_vx = vx * 0.016
-                    self._fall_vy = vy * 0.016
-                    self._fall_gravity = 0.8
-                    self._fall_air_drag = 0.995
-                    self.create_text_popup("滾滾滾～", 170, 120, color=ACCENT_COLOR)
-            else:
-                # 判定是否處於高空以啟動自由落體 (支援多螢幕)
-                m_info = self.get_current_monitor_info()
-                landing_y = m_info["work_y"] + m_info["work_h"] - 300
-                current_y = self.root.winfo_y()
-                if current_y < landing_y - 20:
-                    self.pet.state = "fall"
-                    self._fall_vx = vx * 0.016
-                    self._fall_vy = vy * 0.016
-                    self._fall_gravity = 0.8
-                    self._fall_air_drag = 0.995
-                    self.pet.roll_speed = max(-0.1, min(0.1, vx * 0.0004))
-                    self.create_text_popup("哇哇哇～", 170, 120, color=PINK_COLOR)
+            vx, vy = canvas_drag_velocity(self._drag_history, time.time())
+            self._release_desktop_drag(vx, vy, self.root.winfo_y())
         else:
             # 短按放開：觸發溫和的果凍拉伸彈跳，不進行滾動
             if event:

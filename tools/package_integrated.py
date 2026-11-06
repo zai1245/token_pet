@@ -31,6 +31,8 @@ SOURCE_FILES = (
     "unity_renderer_bridge.py",
     "usage_widget.py",
     "config_store.py",
+    "companion_journal.py",
+    "companion_window.py",
 )
 
 RUNTIME_ENTRIES = (

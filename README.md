@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/GUI-Tkinter%20Canvas-orange.svg" alt="GUI Framework">
   <img src="https://img.shields.io/badge/AI-DeepSeek--V4%20%2F%20GLM--5-purple.svg" alt="AI Model">
   <img src="https://img.shields.io/badge/OS-Windows-success.svg" alt="OS Support">
-  <img src="https://img.shields.io/badge/Version-0.8.12--preview-brightgreen.svg" alt="App Version">
+  <img src="https://img.shields.io/badge/Version-0.8.13--preview-brightgreen.svg" alt="App Version">
 </p>
 
 **TokenPet（地瓜球）** 是一隻運行在 Windows 桌面上的軟萌 Q 彈 2.5D 電子寵物與 API Token 即時用量監控助理！它不僅能即時監控 API 費用與用量，還擁有完整的果凍物理彈性引擎、動態 360° 轉身渲染、AI 智慧尬聊、日式和風便利貼、家具互動以及豐富的休閒小遊戲！
@@ -24,6 +24,13 @@
 ---
 
 ## ✨ 核心特色與功能亮點
+
+### 📖 陪伴手帳（v0.8.13）
+- 右鍵地瓜球 → **陪伴手帳與每日小事**，可查看今日小目標、6 枚累計徽章與最近 30 天的陪伴回憶。
+- 每日摸摸 3 次、一起伸懶腰、玩一局遊戲即可手動領取地瓜幣與 XP；全數領取另有圓滿獎勵。
+- **打個招呼／一起伸懶腰**是免費互動；接水果也可免費完成遊戲目標，不需要增加公司 Token 使用量。
+- 重開程式保留進度與已領獎勵，跨日更新今日小事；累計徽章不因漏玩一天而重置。
+- Unity 與 Canvas 共用同一份手帳存檔，月費小標籤維持原本大小與 USD 顯示。
 
 ### 1. 🎨 向量 2.5D 動態物理與視覺渲染
 - **純程式碼 Canvas 向量繪製**：無須任何外部 PNG/GIF 圖檔依賴，極度輕量、高幀率且支援任意解析度縮放防鋸齒。

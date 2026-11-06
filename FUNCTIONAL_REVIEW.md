@@ -86,3 +86,12 @@ The bright contour was reproduced on the actual desktop: bilinear/antialiased sp
 Validation: **122 tests passed**. The real Unity art probe passed **14 checks** covering dark/light desktop backgrounds, zero magenta-matte fringe pixels in the fixture, fractional alpha, contact-shadow placement, single limb tint and cross-process hit testing. The existing **10 native physics checks** and Canvas/Unity trajectory comparison also pass.
 
 Actual desktop previews are produced at `scratch/art-review/art-dark.png`, `art-light.png` and `art-shop.png`. The probe captures only its own controlled backdrop/fixture; no personal desktop content is used. Test-only components are compiled into an isolated runtime copy and excluded from production packages.
+
+## v0.8.13 follow-up — companionship content (2026-11-06)
+
+- Added an opt-in paper journal with three daily goals, six lifetime badges and 30 calendar days of grouped memories. Both context menus expose the journal and free greeting/stretch actions; existing wave/stretch renderer effects are reused.
+- Canvas/Unity pokes and completed RPS, fruit, slots and basketball goals share one local progress model. Opening or cancelling a game does not count as completion. The fruit game supplies a free route to the daily play goal; no company API usage is required.
+- Three goals award 45 coins / 20 XP in total; claiming all three adds a once-per-day 30 coin / 15 XP bonus. Claim state, wallet and level are saved together, with in-memory rollback on write failure. Date high-water protection prevents clock rewind from reopening claimed days. Existing savegames require no manual migration.
+- The journal is a singleton managed window with scoped scrolling and owned refresh timers. It refreshes daily state while open, and closing/reopening or shutting down the app releases its callbacks. The monthly USD HUD is unchanged.
+- Validation: **136 tests pass**, including 14 new journal/progression tests, actual Canvas and Unity window lifecycle coverage, 14 native alpha/art checks and 10 native physics checks. Controlled journal previews are in `scratch/companion-review/`; captures use only the fixture's own window and synthetic save data.
+- Local renderer version is 0.8.13-preview. Only the managed assembly/version changed on the Unity side; no new scene, shader or imported sprite assets are needed. Canonical full builds still require the documented Unity Editor version.

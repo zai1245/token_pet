@@ -16,6 +16,9 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from datetime import datetime
+from copy import deepcopy
+
+from companion_journal import CompanionJournal
 
 # 匯入原本 usage_widget.py 的設定與功能，達成程式碼高度共享，且保留 usage_widget 原始碼不被改動
 from usage_widget import (
@@ -446,6 +449,11 @@ class EmojinokoMonitor:
         self.undo_menu = tk.Menu(self.context_menu, tearoff=0, bg="#252535", fg=TEXT_COLOR,
                                  activebackground=ACCENT_COLOR, activeforeground="#1e1e2e", relief=tk.FLAT)
 
+        self.context_menu.add_command(label="📖 陪伴手帳與每日小事", command=self.open_companion_journal)
+        self.context_menu.add_command(label="👋 打個招呼", command=self.greet_companion)
+        self.context_menu.add_command(label="🌿 一起伸懶腰", command=self.stretch_companion)
+        self.context_menu.add_separator()
+
         if self.STANDALONE:
             self.context_menu.add_command(label="💬 找地瓜球尬聊 (AI Chat)", command=self.open_ai_chat)
             self.context_menu.add_command(label="🟢 投餵地瓜球 (Feed)", command=self.simulate_usage)
@@ -733,6 +741,7 @@ class EmojinokoMonitor:
 
     def _handle_unity_poke(self):
         """Apply the original Canvas click reaction and five-click fever combo."""
+        self._record_companion_event("pet")
         self.pet.vel_scale_y = -0.22
         self.pet.vel_scale_x = 0.15
         self.pet.eye_state = "happy"
@@ -2812,6 +2821,7 @@ class EmojinokoMonitor:
                 cx, cy = 170, 205
                 dist = math.hypot(event.x - cx, event.y - cy)
                 if dist < self.pet.r + 5:
+                    self._record_companion_event("pet")
                     self.pet.vel_scale_y = -0.22  # 縱向拉伸
                     self.pet.vel_scale_x = 0.15   # 橫向收縮
                     self.pet.eye_state = "happy"
@@ -2983,6 +2993,9 @@ class EmojinokoMonitor:
         """顯示與 Unity 地瓜球同色系、功能完整的右鍵選單。"""
         status_label = "隱藏狀態" if self._unity_status_visible else "顯示狀態"
         common = [
+            ("📖  陪伴手帳與每日小事", self.open_companion_journal),
+            ("👋  打個招呼", self.greet_companion),
+            ("🌿  一起伸懶腰", self.stretch_companion),
             ("💬  找地瓜球尬聊 (AI Chat)", self.open_ai_chat),
             ("💰  查看目前費用", self.show_current_cost),
             ("📊  詳細 Token 統計", self.open_detailed_stats),
@@ -3235,6 +3248,7 @@ class EmojinokoMonitor:
                 self.create_text_popup(f"LEVEL UP! Lv.{curr_level} 🎉", 170, 90, color=YELLOW_COLOR)
                 
         # 3 秒後收起看板並恢復表情
+        self._record_companion_event("play")
         self.root.after(3000, self._cleanup_rps)
         
     def _cleanup_rps(self):
@@ -3708,9 +3722,96 @@ class EmojinokoMonitor:
 
     def save_pet_savegame(self):
         """將地瓜球狀態寫回 .credentials"""
-        save_config({"pet_game": self.pet_data})
+        return save_config({"pet_game": self.pet_data})
 
-    def check_level_up(self):
+    def _companion_progress(self):
+        journal = getattr(self, "_companion_journal", None)
+        if journal is None:
+            journal = self._companion_journal = CompanionJournal(self.pet_data)
+        return journal
+
+    def companion_snapshot(self):
+        return self._companion_progress().snapshot()
+
+    def _record_companion_event(self, event):
+        unlocked = self._companion_progress().record(event)
+        self.save_pet_savegame()
+        if unlocked:
+            self.create_text_popup(f"收藏新徽章：{unlocked[0]}", 170, 95, color="#b99855")
+
+    def open_companion_journal(self):
+        from companion_window import CompanionWindow
+        previous = getattr(self, "companion_win", None)
+        if previous is not None and previous.winfo_exists():
+            previous.deiconify()
+            previous.lift()
+            return
+        self.companion_win = CompanionWindow(self)
+
+    def _companion_can_react(self):
+        return (self.pet.state in ("idle", "walk") and
+                not getattr(self, "_unity_dragging", False) and
+                not getattr(self, "_has_dragged", False) and
+                not getattr(self, "_rps_active", False) and
+                not getattr(self.pet, "fever_timer", 0) and
+                not getattr(self, "_fall_vy", 0) and not getattr(self, "_fall_vx", 0))
+
+    def _prepare_companion_reaction(self):
+        self.pet.state = "idle"
+        self.pet.doze_timer = 0
+        self.pet.bubble_timer = 0
+        self.pet.singing_timer = 0
+        self.pet.mouth_state = "normal"
+
+    def greet_companion(self):
+        if not self._companion_can_react() or getattr(self.pet, "wave_timer", 0) > 0:
+            return
+        self._prepare_companion_reaction()
+        self.pet.wave_timer = 120
+        self.pet.eye_state = "happy"
+        self.pet.vel_scale_y = -0.12
+        self.pet.vel_scale_x = 0.08
+        self._record_companion_event("greet")
+        self.create_text_popup(random.choice([
+            "嗨！今天也一起慢慢來。", "看到你就開心，揮揮手！", "地瓜球報到，準備陪你啦。",
+        ]), 170, 125, color="#b99855")
+        self.root.after(2000, self.pet.restore_eye)
+
+    def stretch_companion(self):
+        if not self._companion_can_react() or getattr(self.pet, "stretch_timer", 0) > 0:
+            return
+        self._prepare_companion_reaction()
+        self.pet.stretch_timer = 90
+        self.pet.eye_state = "happy"
+        self._record_companion_event("stretch")
+        self.create_text_popup(random.choice([
+            "手舉高～肩膀也放鬆一下。", "伸個懶腰，呼——舒服！", "看一下遠方，我等你。",
+        ]), 170, 125, color="#8caa86")
+        self.root.after(3000, self.pet.restore_eye)
+
+    def claim_companion_goal(self, goal_id):
+        before = deepcopy(self.pet_data)
+        old_level = self.pet_data.get("level", 1)
+        reward = self._companion_progress().claim(goal_id)
+        if not reward.coins:
+            return "還沒完成，或這份獎勵已經領過囉。"
+        self.pet_data["coins"] = self.pet_data.get("coins", 0) + reward.coins
+        self.pet_data["xp"] = self.pet_data.get("xp", 0.0) + reward.xp
+        self.check_level_up(persist=False, notify=False)
+        # Claim flags and the wallet must reach disk in the same save.
+        if self.save_pet_savegame() is False:
+            self.pet_data = before
+            self._companion_journal = None
+            return "手帳暫時無法儲存，獎勵尚未領取，請稍後再試。"
+        text = f"+{reward.coins} 地瓜幣  +{reward.xp} XP"
+        if reward.bonus:
+            text = "今日圓滿！ " + text
+        if self.pet_data["level"] > old_level:
+            text += f"  升到 Lv.{self.pet_data['level']}！"
+        self.create_text_popup(text, 170, 100, color="#b99855")
+        return text
+
+    def check_level_up(self, persist=True, notify=True):
         """Apply all earned levels, including rewards spanning several levels."""
         level = max(1, int(self.pet_data.get("level", 1)))
         xp = float(self.pet_data.get("xp", 0.0))
@@ -3722,11 +3823,12 @@ class EmojinokoMonitor:
             xp -= PET_XP_THRESHOLD + (level - 1) * 50.0
             level += 1
         self.pet_data.update(level=level, xp=xp)
-        if level > initial:
+        if level > initial and notify:
             self.pet.vel_scale_y = 0.5
             self.pet.vel_scale_x = -0.4
             self.create_text_popup(f"LEVEL UP! Lv.{level}", 170, 85, color=PINK_COLOR)
-        self.save_pet_savegame()
+        if persist:
+            self.save_pet_savegame()
         return level > initial
 
     def gain_pet_xp(self, amount):
@@ -4432,6 +4534,7 @@ class UnityBasketballHoop:
         bridge = getattr(self.monitor, "unity_renderer", None)
         if bridge is not None:
             bridge.basketball_goal()
+        self.monitor._record_companion_event("play")
         self.monitor.root.after(350, self._settle_net)
 
     def _settle_net(self):
@@ -4566,6 +4669,7 @@ class BasketballHoop(ManagedToplevel):
         self.net_shake_timer = 30
         self.spawn_confetti()
         self.draw_hoop()
+        self.monitor._record_companion_event("play")
         
     def spawn_confetti(self):
         colors = ["#ff5555", "#ffaa00", "#ffdd00", "#a6e3a1", "#89b4fa", "#f5c2e7"]
@@ -4686,6 +4790,7 @@ class FruitCatcherWindow(ManagedToplevel):
         self.monitor.gain_pet_xp(xp_won)
         self.monitor.save_pet_savegame()
         self.monitor.create_text_popup(f"🎉 結算！+{coins_won} 🪙 +{xp_won} XP", 170, 100, color="#a6e3a1")
+        self.monitor._record_companion_event("play")
 
     def spawn_fruit(self):
         r = random.random()
@@ -4944,6 +5049,7 @@ class SlotMachineWindow(ManagedToplevel):
         self.monitor.pet_data["coins"] = self.monitor.pet_data.get("coins", 0) + reward
         self.monitor.save_pet_savegame()
         self.monitor.create_text_popup(f"🎰 {self.status_msg}", 170, 100, color="#f9e2af")
+        self.monitor._record_companion_event("play")
 
     def draw_machine(self):
         self.canvas.delete("all")

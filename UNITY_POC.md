@@ -5,6 +5,20 @@
 `EmojinokoPet`、Tkinter Canvas、物理迴圈、家具與存檔均完整保留，預設也仍然
 啟用舊版 renderer。
 
+## v0.8.13 preview：陪伴手帳
+
+Python 主程式新增 `companion_journal.py` 與 `companion_window.py`。右鍵選單可開啟
+陪伴手帳、免費打招呼與伸懶腰；揮手／伸展沿用現有 snapshot effects，不增加 IPC
+協定或新的 Unity 場景資產。每日小事、6 枚累計徽章與最近 30 天回憶儲存在
+`pet_game.companionship`；Canvas 與 Unity 的摸摸、猜拳、投籃、接水果與拉霸共用紀錄。
+
+領獎旗標、地瓜幣與 XP 以同一次原子存檔保存；失敗則恢復領取前的狀態。
+每日三份獎勵合計 45 地瓜幣／20 XP，全數領取另送 30 地瓜幣／15 XP。
+沒有 Token 使用量目標，月費 HUD 尺寸與內容保持不變。
+
+本機可執行 `python -m unittest discover -s tests -p test_companion_journal.py -v`，
+涵蓋跨日、重開防重領、時鐘回撥、回憶保留期限與存檔失敗回復。
+
 ## v0.8.12 preview：透明合成與美術整理
 
 Windows 10/11 顯示程序使用 DWM 直接合成 framebuffer alpha。Camera 清為透明黑，

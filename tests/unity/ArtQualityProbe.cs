@@ -27,6 +27,9 @@ namespace TokenPet
         [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr window, IntPtr dc);
         [DllImport("user32.dll")] private static extern int FillRect(IntPtr dc, ref NativeRect rect, IntPtr brush);
         [DllImport("user32.dll")] private static extern IntPtr WindowFromPoint(NativePoint point);
+        [DllImport("user32.dll")] private static extern bool SetCursorPos(int x, int y);
+        [DllImport("user32.dll")] private static extern bool GetCursorPos(out NativePoint point);
+        [DllImport("user32.dll")] private static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
         [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
         [DllImport("gdi32.dll")] private static extern IntPtr GetStockObject(int index);
         [DllImport("gdi32.dll")] private static extern IntPtr CreateCompatibleDC(IntPtr dc);
@@ -95,13 +98,7 @@ namespace TokenPet
                 }
                 typeof(TokenPetPocBootstrap).GetMethod("CachePetInteractiveRect", Private).Invoke(pet, null);
                 if (uint.TryParse(Environment.GetEnvironmentVariable("TOKENPET_ART_FOREIGN_PID"), out uint foreignPid))
-                {
-                    GetWindowThreadProcessId(WindowFromPoint(new NativePoint { x = left + 4, y = top + 4 }), out uint emptyPid);
-                    Check(emptyPid == foreignPid, $"transparent stage blocks the other application's window: {emptyPid}");
-                    GetWindowThreadProcessId(WindowFromPoint(new NativePoint { x = left + 230, y = top + 245 }), out uint petPid);
-                    Check(petPid == (uint)System.Diagnostics.Process.GetCurrentProcess().Id,
-                        $"pet is not interactive: pid={petPid}, bounds={typeof(TokenPetPocBootstrap).GetField("cachedPetInteractiveRect", Private).GetValue(pet)}");
-                }
+                    yield return ClickOtherWindow(hwnd, foreignPid);
 
                 // Capture only this application's fixture, backed by a window
                 // owned by the probe, so no personal desktop contents are read.
@@ -141,12 +138,19 @@ namespace TokenPet
                 Check(partial > 100, "antialiased edges/shadows lost fractional alpha");
                 RenderTexture.active = previous; Destroy(rgba); frame.Release(); Destroy(frame);
 
-                FindAnyObjectByType<TokenPetShopPanel>().Show("{\"coins\":125,\"items\":[{\"id\":\"crown\",\"name\":\"小小皇冠\",\"description\":\"暖金色的小皇冠，今天也要閃閃發亮。\",\"category\":\"accessory\",\"price\":50},{\"id\":\"scholar_cap\",\"name\":\"學士帽\",\"description\":\"把每天累積的小進步，戴在頭上。\",\"category\":\"accessory\",\"price\":30},{\"id\":\"cat_ears\",\"name\":\"貓咪耳朵\",\"description\":\"柔軟的暖粉色耳朵。\",\"category\":\"accessory\",\"price\":40}]}");
+                TokenPetShopPanel shop = FindAnyObjectByType<TokenPetShopPanel>();
+                shop.Show("{\"coins\":125,\"items\":[{\"id\":\"crown\",\"name\":\"小小皇冠\",\"description\":\"暖金色的小皇冠，今天也要閃閃發亮。\",\"category\":\"accessory\",\"price\":50},{\"id\":\"scholar_cap\",\"name\":\"學士帽\",\"description\":\"把每天累積的小進步，戴在頭上。\",\"category\":\"accessory\",\"price\":30},{\"id\":\"cat_ears\",\"name\":\"貓咪耳朵\",\"description\":\"柔軟的暖粉色耳朵。\",\"category\":\"accessory\",\"price\":40}]}");
                 ShowBackdrop(hwnd, false);
                 yield return new WaitForSecondsRealtime(0.18f);
                 yield return new WaitForEndOfFrame(); DwmFlush();
                 CaptureDesktop(Path.Combine(output, "art-shop.png"));
                 DestroyBackdrop();
+                if (foreignPid != 0)
+                {
+                    shop.Hide(false);
+                    yield return DragPet(hwnd, overlay, pet);
+                    yield return ClickOtherWindow(hwnd, foreignPid);
+                }
                 File.WriteAllText(result, $"PASS: {checks} native art/alpha checks, dark and light desktop captures");
                 Application.Quit(0);
             }
@@ -154,6 +158,80 @@ namespace TokenPet
             {
                 DestroyBackdrop();
             }
+        }
+
+        private IEnumerator ClickOtherWindow(IntPtr hwnd, uint foreignPid)
+        {
+            string clicked = Environment.GetEnvironmentVariable("TOKENPET_ART_CLICK_RESULT");
+            File.Delete(clicked);
+            GetCursorPos(out NativePoint original);
+            int x = left + 14, y = top + 14;
+            SetWindowPos(hwnd, new IntPtr(-1), 0, 0, 0, 0, 0x0013);
+            SetCursorPos(x, y);
+            try
+            {
+                yield return new WaitForSecondsRealtime(0.12f);
+                IntPtr candidate = WindowFromPoint(new NativePoint { x = x, y = y });
+                GetWindowThreadProcessId(candidate, out uint candidatePid);
+                Check(CursorAt(x, y) && (candidatePid == foreignPid || candidate == hwnd),
+                    "test cursor or foreign fixture is covered by an unrelated window");
+                mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
+                mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
+                yield return new WaitForSecondsRealtime(0.25f);
+                Check(File.Exists(clicked), "transparent stage swallowed a real mouse click to the other application");
+            }
+            finally
+            {
+                if (CursorAt(x, y)) SetCursorPos(original.x, original.y);
+            }
+        }
+
+        private IEnumerator DragPet(IntPtr hwnd, TokenPetWindowsOverlay overlay, TokenPetPocBootstrap pet)
+        {
+            GetCursorPos(out NativePoint original);
+            Vector2Int originalPosition = overlay.GetPosition();
+            int x = left + 230, y = top + 245;
+            FieldInfo pointerDown = typeof(TokenPetPocBootstrap).GetField("pointerDown", Private);
+            bool pressed = false;
+            SetWindowPos(hwnd, new IntPtr(-1), 0, 0, 0, 0, 0x0013);
+            SetCursorPos(x, y);
+            try
+            {
+                yield return new WaitForSecondsRealtime(0.12f);
+                Check(CursorAt(x, y) && WindowFromPoint(new NativePoint { x = x, y = y }) == hwnd,
+                    "the visible pet cannot receive mouse input");
+                mouse_event(0x0008, 0, 0, 0, UIntPtr.Zero);
+                mouse_event(0x0010, 0, 0, 0, UIntPtr.Zero);
+                yield return new WaitForSecondsRealtime(0.12f);
+                Check(overlay.TryConsumeContextClick(out _), "the pet did not receive a right click");
+
+                Check(CursorAt(x, y), "test cursor moved off the pet");
+                pet.enabled = true;
+                mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
+                pressed = true;
+                yield return new WaitForSecondsRealtime(0.12f);
+                Check((bool)pointerDown.GetValue(pet), "the pet did not receive the first mouse-down");
+                x -= 140;
+                SetCursorPos(x, y);
+                yield return new WaitForSecondsRealtime(0.12f);
+                Check(overlay.GetPosition().x == originalPosition.x - 140,
+                    "drag did not follow the cursor outside the original pet bounds");
+                mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
+                pressed = false;
+                yield return new WaitForSecondsRealtime(0.12f);
+                Check(!(bool)pointerDown.GetValue(pet), "drag kept intercepting input after mouse-up");
+            }
+            finally
+            {
+                if (pressed) mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
+                pet.enabled = false;
+                if (CursorAt(x, y)) SetCursorPos(original.x, original.y);
+            }
+        }
+
+        private static bool CursorAt(int x, int y)
+        {
+            return GetCursorPos(out NativePoint current) && current.x == x && current.y == y;
         }
 
         private void ShowBackdrop(IntPtr hwnd, bool dark)

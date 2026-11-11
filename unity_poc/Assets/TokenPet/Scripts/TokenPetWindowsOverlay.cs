@@ -26,6 +26,7 @@ namespace TokenPet
         private const int DwmncrpDisabled = 1;
         private const uint SwpNoSize = 0x0001;
         private const uint SwpNoMove = 0x0002;
+        private const uint SwpNoActivate = 0x0010;
         private const uint SwpFrameChanged = 0x0020;
         private const uint MonitorDefaultToNearest = 0x00000002;
         private const int SwHide = 0;
@@ -84,10 +85,10 @@ namespace TokenPet
         [DllImport("user32.dll")]
         private static extern bool IsWindowVisible(IntPtr hWnd);
 
-        [DllImport("user32.dll", EntryPoint = "GetWindowLongPtr")]
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", ExactSpelling = true)]
         private static extern IntPtr GetWindowLongPtr64(IntPtr hWnd, int index);
 
-        [DllImport("user32.dll", EntryPoint = "SetWindowLongPtr")]
+        [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", ExactSpelling = true, SetLastError = true)]
         private static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int index, IntPtr value);
 
         [DllImport("user32.dll")]
@@ -166,9 +167,9 @@ namespace TokenPet
                 // Keep the player activatable. WS_EX_NOACTIVATE makes Unity's legacy
                 // input state unreliable and can make a click look like the window
                 // vanished even though the process is still alive.
-                // Let DWM compose the framebuffer's alpha directly. A layered
-                // color-key window leaves magenta in every antialiased edge.
-                exStyle &= ~WsExLayered;
+                // Windows uses the layered style for cross-process mouse
+                // passthrough. DWM still composites the framebuffer alpha.
+                exStyle |= WsExLayered;
                 if (HasArgument("--tokenpet-debug-window"))
                 {
                     exStyle &= ~WsExToolWindow;
@@ -179,15 +180,20 @@ namespace TokenPet
                     exStyle |= WsExToolWindow;
                     exStyle &= ~WsExAppWindow;
                 }
-                // Per-pixel hit testing is handled by WM_NCHITTEST below. Keeping
-                // WS_EX_TRANSPARENT set until the next Unity frame can lose the
-                // first mouse-down, which made furniture appear non-draggable.
-                exStyle &= ~WsExTransparent;
-                SetWindowLongPtr64(windowHandle, GwlExStyle, new IntPtr(exStyle));
+                // The full-size stage starts with mouse input disabled until
+                // its character and controls have usable hit bounds.
+                exStyle |= WsExTransparent;
+                if (!ApplyExtendedStyle(exStyle))
+                    yield break;
 
                 windowProc = HandleWindowMessage;
                 IntPtr callback = Marshal.GetFunctionPointerForDelegate(windowProc);
                 previousWindowProc = SetWindowLongPtr64(windowHandle, GwlWndProc, callback);
+                if (previousWindowProc == IntPtr.Zero)
+                {
+                    ReturnToCanvas("Could not install desktop hit testing", Marshal.GetLastWin32Error());
+                    yield break;
+                }
 
                 // An explicit empty blur region enables framebuffer alpha on
                 // Windows 10/11 without frosting the desktop. Supplying only
@@ -206,15 +212,14 @@ namespace TokenPet
                 }
                 if (alphaResult != 0)
                 {
-                    UnityEngine.Debug.LogError($"Desktop alpha composition unavailable: {alphaResult}; returning to Canvas.");
-                    Application.Quit();
+                    ReturnToCanvas("Desktop alpha composition unavailable", alphaResult);
                     yield break;
                 }
                 int nonClientPolicy = DwmncrpDisabled;
                 int shadowResult = DwmSetWindowAttribute(windowHandle,
                     DwmwaNcRenderingPolicy, ref nonClientPolicy, sizeof(int));
                 SetWindowPos(windowHandle, HwndTopmost, 0, 0, 0, 0,
-                    SwpNoMove | SwpNoSize | SwpFrameChanged);
+                    SwpNoMove | SwpNoSize | SwpNoActivate | SwpFrameChanged);
                 UnityEngine.Debug.Log(
                     $"TokenPet overlay initialized. hwnd={windowHandle}, " +
                     $"alpha={alphaResult == 0}, shadow={shadowResult}, " +
@@ -222,7 +227,7 @@ namespace TokenPet
                 int startX = ReadIntArgument("--tokenpet-x=", 0);
                 int startY = ReadIntArgument("--tokenpet-y=", 0);
                 PetPosition = new Vector2Int(startX, startY);
-                SetWindowPos(windowHandle, HwndTopmost, startX, startY, 0, 0, SwpNoSize);
+                SetWindowPos(windowHandle, HwndTopmost, startX, startY, 0, 0, SwpNoSize | SwpNoActivate);
 
                 // One transparent Unity surface now owns the character and all
                 // furniture. Empty pixels are click-through, so this behaves like
@@ -238,8 +243,12 @@ namespace TokenPet
                     StageSize = new Vector2Int(virtualWidth, virtualHeight);
                     SetWindowPos(windowHandle, HwndTopmost,
                         StageOrigin.x, StageOrigin.y, StageSize.x, StageSize.y,
-                        SwpFrameChanged);
+                        SwpNoActivate | SwpFrameChanged);
                     IsDesktopStage = true;
+                }
+                else
+                {
+                    SetMousePassthrough(false);
                 }
             }
 #endif
@@ -262,7 +271,7 @@ namespace TokenPet
                 {
                     SetWindowPos(windowHandle, HwndTopmost,
                         StageOrigin.x, StageOrigin.y, StageSize.x, StageSize.y,
-                        SwpFrameChanged);
+                        SwpNoActivate | SwpFrameChanged);
                 }
 #endif
             }
@@ -273,6 +282,60 @@ namespace TokenPet
         }
 
 #if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+        private void LateUpdate()
+        {
+            if (!IsDesktopStage || windowHandle == IntPtr.Zero)
+                return;
+            bool interactive = GetCursorPos(out Point point) &&
+                IsInteractive(new Vector2Int(point.X, point.Y));
+            SetMousePassthrough(!interactive);
+        }
+
+        private void SetMousePassthrough(bool passthrough)
+        {
+            long style = GetWindowLongPtr64(windowHandle, GwlExStyle).ToInt64();
+            long next = passthrough ? style | WsExTransparent : style & ~WsExTransparent;
+            if (style == next)
+                return;
+
+            // HTTRANSPARENT only guarantees forwarding within the same
+            // thread. Layered mouse passthrough reaches other applications.
+            ApplyExtendedStyle(next);
+        }
+
+        private bool ApplyExtendedStyle(long style)
+        {
+            IntPtr previous = SetWindowLongPtr64(windowHandle, GwlExStyle, new IntPtr(style));
+            int error = Marshal.GetLastWin32Error();
+            // Zero can be the previous style of the startup window.
+            if (previous != IntPtr.Zero || GetWindowLongPtr64(windowHandle, GwlExStyle).ToInt64() == style)
+                return true;
+
+            ReturnToCanvas("Could not change desktop window style", error);
+            return false;
+        }
+
+        private void ReturnToCanvas(string reason, int error)
+        {
+            UnityEngine.Debug.LogError($"{reason}: {error}; returning to Canvas.");
+            IsDesktopStage = false;
+            ShowWindow(windowHandle, SwHide);
+            Application.Quit();
+        }
+
+        private bool IsInteractive(Vector2Int point)
+        {
+            try
+            {
+                return InteractiveHitTest != null && InteractiveHitTest(point);
+            }
+            catch (Exception exception)
+            {
+                UnityEngine.Debug.LogWarning($"Overlay hit test failed: {exception.Message}");
+                return false;
+            }
+        }
+
         private IntPtr HandleWindowMessage(IntPtr hWnd, uint message, IntPtr wParam, IntPtr lParam)
         {
             if (message == WmNcHitTest && IsDesktopStage)
@@ -280,17 +343,7 @@ namespace TokenPet
                 long packed = lParam.ToInt64();
                 int x = unchecked((short)(packed & 0xffff));
                 int y = unchecked((short)((packed >> 16) & 0xffff));
-                try
-                {
-                    bool interactive = InteractiveHitTest != null &&
-                        InteractiveHitTest(new Vector2Int(x, y));
-                    return new IntPtr(interactive ? HtClient : HtTransparent);
-                }
-                catch (Exception exception)
-                {
-                    UnityEngine.Debug.LogWarning($"Overlay hit test failed: {exception.Message}");
-                    return new IntPtr(HtTransparent);
-                }
+                return new IntPtr(IsInteractive(new Vector2Int(x, y)) ? HtClient : HtTransparent);
             }
 
             // A full-desktop Unity window does not deliver legacy
@@ -403,7 +456,7 @@ namespace TokenPet
             {
                 ShowWindow(windowHandle, visible ? SwShowNoActivate : SwHide);
                 if (visible)
-                    SetWindowPos(windowHandle, HwndTopmost, 0, 0, 0, 0, SwpNoMove | SwpNoSize);
+                    SetWindowPos(windowHandle, HwndTopmost, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate);
             }
 #endif
         }

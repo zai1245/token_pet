@@ -17,6 +17,7 @@ class UnityArtRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="tokenpet-art-backdrop-") as directory:
             fixture = Path(directory) / "fixture.py"
             ready, stop = Path(directory) / "ready", Path(directory) / "stop"
+            clicked = Path(directory) / "clicked"
             fixture.write_text('''import ctypes, pathlib, sys, tkinter as tk
 try: ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
 except (AttributeError, OSError): pass
@@ -28,6 +29,8 @@ root.overrideredirect(True)
 root.geometry(f"850x430+{left}+{top}")
 root.configure(bg="white")
 root.attributes("-topmost", True)
+root.bind("<Button-1>", lambda event: pathlib.Path(sys.argv[3]).touch()
+          if 0 <= event.x < 30 and 0 <= event.y < 30 else None)
 root.update()
 pathlib.Path(sys.argv[1]).touch()
 def poll():
@@ -37,14 +40,15 @@ root.after(50, poll)
 root.after(45000, root.destroy)
 root.mainloop()
 ''', encoding="utf-8")
-            process = subprocess.Popen([sys.executable, str(fixture), str(ready), str(stop)],
+            process = subprocess.Popen([sys.executable, str(fixture), str(ready), str(stop), str(clicked)],
                                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             try:
                 deadline = time.monotonic() + 5
                 while not ready.exists() and time.monotonic() < deadline:
                     time.sleep(0.05)
                 self.assertTrue(ready.exists(), "foreign backdrop did not start")
-                with mock.patch.dict(os.environ, TOKENPET_ART_FOREIGN_PID=str(process.pid)):
+                with mock.patch.dict(os.environ, TOKENPET_ART_FOREIGN_PID=str(process.pid),
+                                     TOKENPET_ART_CLICK_RESULT=str(clicked)):
                     native.UnityThrowRuntimeTests.run_native_probe(self, "ArtQualityProbe", "TOKENPET_ART_PROBE_RESULT",
                                                                  native.ROOT / "scratch/art-review")
             finally:
